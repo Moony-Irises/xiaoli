@@ -4,6 +4,7 @@ Minecraft Java bot and local agent control plane built with TypeScript, Mineflay
 
 ## Structure
 
+- `../README.md`: repository overview, quick start and public project status
 - `src/runtime/`: bot lifecycle, client adapters and typed runtime projections
 - `src/agent/`: blackboard, event bus, reactive rules and skill catalog
 - `src/catalog/`: shared tool metadata and exposure policy

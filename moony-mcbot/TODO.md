@@ -1168,3 +1168,13 @@
 - [x] 使用 Conventional Commit 重建干净根提交，并将 `main` 推送至 `https://github.com/Moony-Irises/xiaoli.git`
 
 结果：可达历史仅保留使用 GitHub noreply 身份的新根提交；旧 README 登录邮箱未进入新快照。`origin/main` 已建立，真实本地配置和共享模块目录继续由根 `.gitignore` 隔离。
+
+## 当前任务：GitHub 仓库首页
+
+- [x] 盘点 Git 根目录、现有项目 README、CLAUDE 索引、CI、启动命令、架构与测试文档
+- [x] 确认边界：根 README 面向首次访问者，详细能力清单继续保留在 `moony-mcbot/README.md`；不把 Modded Client Bridge、真实服务器回归或稳定发行描述为已完成
+- [x] 尝试 Context7 与 Notion 知识检索；Context7 因本机 API key 无效不可用，当前没有可用 Notion 连接，改用 GitHub 与 Mineflayer 官方资料核对
+- [x] 新增根 `README.md`，包含项目定位、状态、能力、限制、架构图、快速开始、目录、文档入口、安全提示与路线图
+- [x] 同步 `CLAUDE.md` 精简索引与本轮 release entry
+- [x] 校验 11 个 Markdown 相对链接、203 条 release entry、lint、源码/测试 typecheck、366 项完整测试和 build，结果全部通过
+- [x] 自审新增行隐私、成熟度表述、4 文件工作树范围与最终 diff，使用 Conventional Commit 推送 `main`，并同步 GitHub 仓库描述与 topics
