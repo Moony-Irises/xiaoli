@@ -1,0 +1,38 @@
+{
+  "name": "moony-mcbot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Minecraft Java bot MCP server with Yggdrasil auth",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/main.ts",
+    "lint": "eslint src test scripts --max-warnings=0",
+    "start": "node dist/main.js",
+    "test": "tsx --test --import ./scripts/test-setup.ts",
+    "typecheck": "npm run typecheck:src && npm run typecheck:test",
+    "typecheck:src": "tsc -p tsconfig.json --noEmit",
+    "typecheck:test": "tsc -p tsconfig.test.json --noEmit",
+    "validate:releases": "tsx scripts/release-entry-validator.ts"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "mineflayer": "4.35.0",
+    "mineflayer-pathfinder": "^2.4.5",
+    "yggdrasil": "1.8.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.39.5",
+    "@types/node": "^24.3.0",
+    "eslint": "9.39.5",
+    "globals": "17.8.0",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2",
+    "typescript-eslint": "8.65.0"
+  }
+}

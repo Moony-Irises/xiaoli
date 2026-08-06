@@ -1,0 +1,16 @@
+/计划表.txt
+/mcp.json
+/pic/
+/voice/
+/memory/
+moony-mcbot/node_modules/
+moony-mcbot/dist/
+moony-mcbot/.env
+moony-mcbot/.env.*
+!moony-mcbot/.env.local.example
+moony-mcbot/*.log
+moony-mcbot/npm-debug.log*
+moony-mcbot/yarn-debug.log*
+moony-mcbot/yarn-error.log*
+moony-mcbot/.DS_Store
+moony-mcbot/coverage/
