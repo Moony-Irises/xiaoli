@@ -1165,6 +1165,6 @@
 - [x] 已按明确授权重建唯一旧提交，移除旧 README 登录邮箱历史，并将提交身份改为 GitHub noreply 邮箱
 - [x] 仅暂存明确允许上传的根 `.gitignore`、`.github/` 与 `moony-mcbot/`，最终索引共 368 个文件，范围外文件为 0
 - [x] 运行 release 校验、lint、typecheck、366 项完整测试、build 与最终索引秘密扫描，结果全部通过
-- [ ] 使用 Conventional Commit 创建原子提交，并在恢复 GitHub 认证、确认目标仓库后推送 `main`
+- [x] 使用 Conventional Commit 重建干净根提交，并将 `main` 推送至 `https://github.com/Moony-Irises/xiaoli.git`
 
-阻塞：现有唯一提交的作者/提交者元数据使用个人邮箱，且旧 README 历史中仍有一处真实登录邮箱；当前未配置 remote，GitHub CLI 凭据也已失效。上传前需明确批准重建该本地提交，并确认目标仓库与重新认证方式。
+结果：可达历史仅保留使用 GitHub noreply 身份的新根提交；旧 README 登录邮箱未进入新快照。`origin/main` 已建立，真实本地配置和共享模块目录继续由根 `.gitignore` 隔离。

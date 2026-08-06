@@ -27,4 +27,4 @@ artifacts:
 
 ## Demo posture / limitations
 
-本轮不是 install demo，尚未发布，也不是 GA。审计未发现待提交工作树中的真实 API key、私钥或密码，但不代表第三方平台已经完成服务端扫描；上传仍需先清理唯一旧提交的邮箱历史、恢复 GitHub 认证并确认目标仓库。
+本轮不是 install demo，不是产品发布，也不是 GA。审计未发现上传快照中的真实 API key、私钥或密码，但这不代表覆盖所有未知凭据格式或替代 GitHub 服务端扫描。唯一旧提交已重建为 noreply 身份的新根提交，`main` 已首次推送至目标仓库。
