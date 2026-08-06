@@ -1177,4 +1177,4 @@
 - [x] 新增根 `README.md`，包含项目定位、状态、能力、限制、架构图、快速开始、目录、文档入口、安全提示与路线图
 - [x] 同步 `CLAUDE.md` 精简索引与本轮 release entry
 - [x] 校验 11 个 Markdown 相对链接、203 条 release entry、lint、源码/测试 typecheck、366 项完整测试和 build，结果全部通过
-- [ ] 已完成新增行隐私、成熟度表述、4 文件范围与最终 diff 自审，并创建 `docs(repo): add XiaoLi repository homepage`；GitHub HTTPS 连接连续三次被重置，`main` 推送与仓库描述/topics 同步待网络恢复
+- [x] 完成新增行隐私、成熟度表述、4 文件范围与最终 diff 自审；网络恢复后已推送 `main`，并同步 GitHub 仓库描述与 6 个 topics
