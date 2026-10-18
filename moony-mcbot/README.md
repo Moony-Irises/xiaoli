@@ -19,6 +19,8 @@
 - 查看当前架构和后续顺序：[架构收敛路线图](docs/architecture-convergence-roadmap.md)
 - 查看未完成问题和当前任务：[TODO](TODO.md)
 
+跟随测试按手动指南第 6 节进行；[第 6.4 节](docs/manual-testing-guide.md#64-安全跟随失败与恢复待游戏内验收)专门说明不可达、途中封路、失败告知和重新跟随。停止后的测试需要重新启动跟随，后台证据应区分首轮错误与途中移动事件。
+
 <details>
 <summary>展开当前能力清单</summary>
 

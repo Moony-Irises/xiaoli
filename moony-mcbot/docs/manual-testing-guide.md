@@ -99,7 +99,7 @@ http://127.0.0.1:4637
 1. 白名单玩家发送 `hi小狸`，确认固定回复只出现一次。
 2. 设置 `Follow Judy`，确认小狸开始跟随。
 3. 点击 `Stop Follow`，确认游戏内停下，同时后台出现停止动作记录。
-4. 让 Judy 走到明显不可达或需要危险绕路的位置，确认小狸不挖路、不搭路，并且只说一次“我跟不上你啦”。
+4. 按第 6.4 节重新启动一次跟随，再让 Judy 走到已加载、仍在跟随距离内但安全路径不可达的位置；确认小狸停止、不挖路、不搭路，并对这次失败只尝试说一次“我跟不上你啦”。第 3 步已经结束了旧跟随，不能直接在停止状态测试不可达。
 
 首次冒烟不要测试攻击、丢物品、批量采矿、容器存取或领地反击。
 
@@ -112,6 +112,7 @@ http://127.0.0.1:4637
 | Goal 持久化 | 设置两步目标后重启 | 无额外动作要求 | `agent.goal.status` 保留 goal、milestones 和索引 |
 | Follow | 设置 `Follow Judy` | 开始跟随且保持距离 | `activationTriggered=true`，trace 出现 follow task |
 | Stop Follow | 点击 `Stop Follow` | 立即停下且不被旧追击重新拉动 | Command/Action History 与 active task 同步结束 |
+| 安全跟随失败 | 按 [第 6.4 节](#64-安全跟随失败与恢复待游戏内验收)启动新的跟随，再测试不可达目标 | 停止，不挖路搭路；这次失败只尝试告知一次 | Adapter 的 `pursue_entity` 失败和 `follow_player` 的任务失败；不强制要求面板显示内部移动事件 |
 | Milestone | `Advance Goal` 后再 `Rewind Goal` | 无额外动作要求 | 目标索引和 `milestone_advanced` / `milestone_rewound` 一致 |
 | Mine | 明确设置附近可见矿目标 | 只挖明确目标，不挖接近路径 | Adapter 动作和事件给出目标或结构化失败原因 |
 | Report | 完成或放弃单步目标 | 附近可信玩家收到简短汇报 | `goal_completed` / `goal_abandoned` 与汇报事件一致 |
@@ -755,7 +756,7 @@ hi小狸
 - 返回里 `activationTriggered = true`。
 - `currentMilestone` 变成 `Maintain proximity to Judy` 或跟随任务已进入运行态。
 - Web 面板 Adapter 最近动作出现 `pursue_entity`；玩家停在最小距离内后出现 `stop_movement`，且不会每 250ms 重复刷停止记录。
-- 玩家走到比小狸高约一格的位置时，pathfinder 不可用的降级路径仍允许跳跃前进；正常安全 pathfinder 不应挖方块或搭柱。
+- 安全 Pathfinder 可用且路线可达时，可沿正常方块台阶绕障跟上；不会挖路、搭路、搭柱或用脚手架。Pathfinder 不可用或路线评估失败时应停止，不能退化成直接向前或强制跳跃；具体失败与恢复按第 6.4 节测试。仅站高一格不保证不可达，也不保证一定触发路径评估。
 
 ### 6.2 停止跟随
 
@@ -782,6 +783,51 @@ hi小狸
 2. 在运行服务的终端按 `Ctrl+C`，观察日志先停止动作 runtime，再进入 bot 断开、持久化 flush 和 MCP 关闭阶段。
 3. 日志中不应在 shutdown 后继续出现新的 Agent executor tick、follow tick、定点移动 tick、duel tick、限时行走停止回调、追击/攻击动作或新的跟随失败聊天；shutdown 前已经开始的 Agent run 允许完成，并应在 persistence flush 后再结束进程。若订阅清理失败，应有带 botId 和订阅类型的 warning，但其他 shutdown 阶段仍继续。
 4. 重启服务后按正常连接流程检查 bot 状态。该项只验证本地资源释放和日志顺序，不能证明真实服务器已完成断线重连回归。
+
+### 6.4 安全跟随失败与恢复（待游戏内验收）
+
+本节不需要模型 API。先完成第 6.1、6.2 节的普通跟随和停止，再单独测安全失败。现在没有游戏窗口时可继续保留为待测。
+
+准备：选择平坦、没有岩浆或悬崖的试验区，使用游戏内实际玩家名（以下为 `Judy`）。记录原 Agent 模式；若自动策略可能重新发起任务，临时将模式改为 `manual`，然后通过 Web 工具运行器或 MCP 直接调用下列工具。人工工具在 manual 模式仍可运行，测试后先停止跟随再恢复原模式。
+
+工具：`move.followPlayer`
+
+```json
+{
+  "botId": "XiaoLi_26.3.3_newnancity",
+  "playerName": "Judy",
+  "minDistance": 2.5,
+  "maxDistance": 24,
+  "sprint": false,
+  "targetStillStopMs": 120000
+}
+```
+
+延长静止等待只是为了留出布置测试的时间。返回 `Started following ...` 表示跟随循环已建立，不表示下一次寻路一定成功。
+
+1. **先测可达。** Judy 与小狸保持约 6-12 格水平距离，在普通地面上走动；确认小狸可以绕过小障碍，并在最小距离内停下。然后点 `Stop Follow`，确认旧任务结束。
+2. **再测首轮不可达。** 由玩家预先布置不能直接绕过的墙体或封闭隔断，让 Judy 仍处于已加载且小于 24 格水平距离的位置。重新调用上面的工具，确保距离大于 2.5 格，需要真正寻路。等待路径评估失败；小狸应停止，周围方块不被挖掘或放置，这次失败只尝试发送一次“我跟不上你啦”。
+3. **核对后台。** 展开 `Client Adapter` 的 `recentActions`，寻找本次 `action="pursue_entity"`、`ok=false`，错误含 `safe path ...`；在 Recent Events / Trace / State Snapshot 查看 `follow_player` 的 `task_failed`，详情应含 `cannot safely follow (...)`，不再有该任务的活动跟随。结合时间与任务类型判断，不能把旧事件当成本次结果。
+4. **再测途中封路。** 清除隔断、重新开始跟随，先确认出现成功的 `pursue_entity`，小狸仍在接近目标时再由玩家封住前路，让安全重规划失败。目标暂时不要跨方块移动，以免触发新的追击目标；若已经进入最小距离而停止，重新准备场景。应停止且只对这次失败告知一次；不要继续反复发跟随指令，否则每次都是新任务，允许各自再次告知。
+5. **最后测恢复与停止。** 移除隔断后重新调用跟随工具，确认能再次跟上。主动点 `Stop Follow` 后玩家继续移动，小狸不应因旧追击恢复前进，也不应把这次主动停止报告为寻路失败。结束时恢复原 Agent 模式。
+
+常见原因及可见证据：
+
+| 场景或原因 | 预期 | 如何判断 |
+| --- | --- | --- |
+| 首轮无路 `no_path`、超时 `path_timeout` 或绕行过长 `detour_too_long` | 拒绝本次追击、停止并结束跟随任务 | Adapter action 的失败错误，加上 `follow_player` 任务失败；首轮通过 Promise 返回错误，不另发内部 `movement_failed` |
+| 首轮成功后，途中重新评估失败 | 停止，并结束与当前移动匹配的跟随任务 | Adapter action 中新增失败记录；内部使用关联 `movementId` 的 `movement_failed`，面板不一定显示事件原文或 ID |
+| `pathfinder_unavailable` 或 `goal_rejected` | 明确失败，不直走、不强制跳跃 | 同样看 Adapter 错误和跟随任务失败；不必为了测试卸载 Pathfinder 或修改依赖 |
+| 玩家暂时不可见、超出 `maxDistance`，或已在 `minDistance` 内 | 等待/搜索或保持距离，不等同于寻路失败 | 详情可能是 `searching for ...`、`out of follow range`；这些状态不能用于验收“我跟不上你啦” |
+| 玩家静止达到 `targetStillStopMs` | 正常结束跟随 | 详情为 `stayed still too long`，不能当成不可达测试通过 |
+
+“一次告知”限定在一次跟随会话的安全路径失败；发送尝试不等于服务器聊天回显已确认。若后台已有路径失败但游戏没显示消息，保留当时的 `send_chat` 结果和聊天记录，分别报告移动与聊天结果。长绕行是否被拒绝由实际路径评估决定，不能只凭视觉距离判断；普通一格台阶并不等于危险跳跃。当前配置允许最多两格下落，不提供零落差保证。`movement.walk` / `wander_area` 是另一条直接控制路径，不属于本节安全寻路验收。
+
+离线证据：既有测试覆盖安全移动配置、首轮及持续失败、单次移动事件、动态目标、旧 ID 过滤、监听清理和停止入口；尚不能代替完整游戏内跟随与聊天回显验收。开发者可执行：
+
+```powershell
+npm test -- test/pathfinder-movement-profile.test.ts test/client-adapter-entity-actions.test.ts test/client-adapter-status.test.ts test/follow-session.test.ts test/follow-session-lifecycle.test.ts test/movement-event-routing.test.ts test/stop-follow-command-integration.test.ts
+```
 
 ## 7. Adapter 动作回归测试
 
@@ -1438,7 +1484,7 @@ npx tsx --test test/mc-client-service-lifecycle.test.ts test/client-adapter-life
 
 当前状态：离线回归已通过；真实服务器的重复断开、断开后重连和 `Ctrl+C` 仍待验证。
 
-安全移动回归：跟随、定点移动、追击和 `mine.digNearestVisible` 的接近阶段使用不可挖掘、不可搭路/搭柱的 Pathfinder 配置。定点移动与实体追击在 Pathfinder 缺失、拒绝目标，或首轮及后续规划 `noPath`、`timeout`、长绕行时会停止并记录失败，不再切换为直接移动；跟随上层只反馈一次“我跟不上你啦”。持续失败以 `movementId` 关联当前任务，旧目标事件不能停止新目标。`movement.walk` / `wander_area` 是限时直接前进，不属于这条安全 Pathfinder 保证，默认权限保持关闭。单块工具只会在进入可触及范围并复核目标后显式挖目标方块；`mine.collectVisible` 等三个批量入口尚未迁移，仍需分开看待。
+安全跟随的完整步骤与证据差异见 [第 6.4 节](#64-安全跟随失败与恢复待游戏内验收)。定点移动、追击和 `mine.digNearestVisible` 的接近阶段同样使用不可挖掘、不可搭路/搭柱的 Pathfinder 配置；定点移动和实体追击拒绝不安全路径后不会切换为直接移动。单块工具只会在进入可触及范围并复核目标后显式挖目标方块；`mine.collectVisible` 等三个批量入口尚未迁移，仍需分开看待。
 
 ## 13. 持久化退出回归
 
@@ -1541,7 +1587,7 @@ npx tsx --test test/auth-service.test.ts test/bot-runtime-connection.test.ts
 | 待测 | Yggdrasil 登录与 spawn | 小狸正常出现且不会重复上线 | `bot.status.state=spawned`，只有一个连接 generation |
 | 待测 | 手动断开与自动重连 | 断开后不被旧连接拉回；服务器断线后按策略重连 | reconnect 次数、错误码和 generation 连续可解释 |
 | 待测 | 跟随与停止 | 开始跟随、停止后立即停下 | 当前 movement、action history 与游戏行为一致 |
-| 待测 | 不可达跟随 | 不挖路、不搭路、不跳危险落差，只说一次“我跟不上你啦” | 一条结构化 movement failure，旧 `movementId` 不影响新任务 |
+| 待测 | [不可达跟随与恢复（6.4）](#64-安全跟随失败与恢复待游戏内验收) | 安全停止，不挖路搭路；每次失败只尝试告知一次，重启跟随后能恢复 | Adapter 错误和跟随任务失败；首轮不另发内部移动事件，旧 ID 过滤由离线回归验证 |
 | 待测 | 单块采矿 | 只挖指定可见方块，不挖接近路径 | `mineBlock` 包含目标复核、接近和最终结果证据 |
 | 待测 | 攻击与决斗 | 单次攻击不追杀；持续决斗按会话结束 | 稳定 entity id、结束原因和攻击记录一致 |
 | 待测 | 容器会话 | 箱子/木桶打开、读写、关闭均正确 | 失败时有明确阶段，物品数量前后可核对 |
