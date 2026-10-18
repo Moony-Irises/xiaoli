@@ -1,14 +1,136 @@
-# Manual Testing Guide
+# 手动测试指南
 
-这份文档是“很久没碰项目之后，怎么从零开始测一轮”的操作手册。
+这是项目唯一的手动测试主入口。第一次或隔很久再次测试时，先完成第 0 节；只有对应冒烟步骤通过后，才进入后面的专项回归。
 
-它不是架构说明，也不是完整验收清单；目标是让你能快速确认：
+架构说明、未来规划和历史记录不放在这里，统一从 [文档索引](README.md) 进入。当前仍待手测的项目以本文的折叠积压和根目录 [`TODO.md`](../TODO.md) 为准。
 
-- bot 能启动并进服
-- 调试面板能看到状态
-- MCP 工具能正常调用
-- agent 核心链路还能跑
-- 最近迁移到 adapter/runtime 的动作没有明显坏掉
+## 0. 十分钟启动与冒烟路径
+
+### 0.1 第一次准备
+
+在 PowerShell 中进入项目并确认 Node.js 版本：
+
+```powershell
+cd C:\xiaoli\moony-mcbot
+node --version
+```
+
+必须是 Node.js 22 或更高版本。首次拉取或 `package-lock.json` 变化后再安装依赖：
+
+```powershell
+npm install
+```
+
+只在 `.env.local` 不存在时复制模板，已有文件不要覆盖：
+
+```powershell
+if (-not (Test-Path .env.local)) {
+  Copy-Item .env.local.example .env.local
+}
+```
+
+打开 `.env.local`，至少确认这些值有效：
+
+| 配置 | 用途 |
+| --- | --- |
+| `MCBOT_DEFAULT_ENABLED=true` | 创建默认 Bot runtime |
+| `MCBOT_DEFAULT_BOT_ID` | Web、MCP 和日志使用的 Bot 标识 |
+| `MCBOT_DEFAULT_AUTH_API_BASE_URL` | Yggdrasil API 根地址 |
+| `MCBOT_DEFAULT_USERNAME` / `MCBOT_DEFAULT_PASSWORD` | 本地登录凭据，只能留在 `.env.local` |
+| `MCBOT_DEFAULT_SERVER_HOST` / `MCBOT_DEFAULT_VERSION` | Minecraft 服务器与协议版本 |
+| `MCBOT_DEFAULT_AUTO_CONNECT=true` | 启动后自动连接 |
+| `MCBOT_DEBUG_WEB_HOST=127.0.0.1` / `MCBOT_DEBUG_WEB_PORT=4637` | 本机调试面板 |
+
+AI key、闲聊和 Agent planner 都不是首次启动的前置条件。先证明本地服务、Web 面板和 Bot 连接正常，再启用 AI。
+
+### 0.2 启动唯一推荐入口
+
+直接运行项目脚本，不要先从 Cherry Studio 或 MCP Inspector 启动：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\start-mcp-server.ps1
+```
+
+脚本会读取 `.env.local`、执行 build，然后启动 MCP server、Web 面板和默认 Bot。保持这个 PowerShell 窗口打开。
+
+终端至少应出现：
+
+- `Debug web panel started`
+- `Default bot runtime created`
+- `MCP server started`
+- 连接成功时出现 `Default bot auto-connected`
+
+出现 `Default bot auto-connect failed` 时，Web 面板仍应可用，但先排查认证或服务器连接，不要继续测试游戏动作。
+
+### 0.3 检查 Web 面板
+
+打开：
+
+```text
+http://127.0.0.1:4637
+```
+
+按顺序检查：
+
+1. 右上角不再一直显示“加载中”。
+2. Bot 下拉框能看到 `MCBOT_DEFAULT_BOT_ID`。
+3. Bot 卡片最终显示 `spawned`；未连接时应显示明确状态或错误，不能是空白页。
+4. `Client Adapter` 显示 `mineflayer`。
+5. `Chat Listener`、`Last Action Result`、`Action History` 和 `Recent Events` 区块存在。
+
+若浏览器拒绝连接，直接跳到“调试面板拒绝连接”；若 Bot 不存在，跳到“bot.status 显示 not found”。
+
+### 0.4 不依赖游戏画面的冒烟
+
+在 Web 面板完成：
+
+1. 点击 `Refresh`，确认状态能持续刷新。
+2. 展开 `Bot Status`、`Agent Status`、`Client Adapter` 和 `Action History`。
+3. 点击 `Observe Self`、`Observe Inventory` 和 `Observe Nearby Players`。
+4. 如果 Bot 尚未 `spawned`，观察工具应返回明确错误；不能伪造成功数据。
+5. 点一次 `Copy Snapshot`，确认能导出当前调试状态。
+
+到这里可以证明本地启动链和调试链工作，但不能证明游戏动作成功。
+
+### 0.5 游戏内安全冒烟
+
+能在游戏里看到小狸时，只按这个顺序测试：
+
+1. 白名单玩家发送 `hi小狸`，确认固定回复只出现一次。
+2. 设置 `Follow Judy`，确认小狸开始跟随。
+3. 点击 `Stop Follow`，确认游戏内停下，同时后台出现停止动作记录。
+4. 让 Judy 走到明显不可达或需要危险绕路的位置，确认小狸不挖路、不搭路，并且只说一次“我跟不上你啦”。
+
+首次冒烟不要测试攻击、丢物品、批量采矿、容器存取或领地反击。
+
+### 0.6 核心 Agent 验收矩阵
+
+下面的矩阵已经合并旧的 Agent 验收场景和核心链路清单。模型自然语言不是证据，至少同时保留游戏行为和一个后台状态来源。
+
+| 场景 | 触发 | 游戏侧通过标准 | 后台证据 |
+| --- | --- | --- | --- |
+| Goal 持久化 | 设置两步目标后重启 | 无额外动作要求 | `agent.goal.status` 保留 goal、milestones 和索引 |
+| Follow | 设置 `Follow Judy` | 开始跟随且保持距离 | `activationTriggered=true`，trace 出现 follow task |
+| Stop Follow | 点击 `Stop Follow` | 立即停下且不被旧追击重新拉动 | Command/Action History 与 active task 同步结束 |
+| Milestone | `Advance Goal` 后再 `Rewind Goal` | 无额外动作要求 | 目标索引和 `milestone_advanced` / `milestone_rewound` 一致 |
+| Mine | 明确设置附近可见矿目标 | 只挖明确目标，不挖接近路径 | Adapter 动作和事件给出目标或结构化失败原因 |
+| Report | 完成或放弃单步目标 | 附近可信玩家收到简短汇报 | `goal_completed` / `goal_abandoned` 与汇报事件一致 |
+| Auto executor | `manual -> auto -> manual` | 不产生重复或停止后的新动作 | `executorAttached` 与新 planner tick 是否继续一致 |
+| Repair | 让活动任务失败 | 不继续重复失败动作 | repair 优先于普通 lifecycle/proactive pass |
+
+详细参数和观察字段见第 5、6、7、9、12 至 14 节。
+
+### 0.7 失败停止点和测试记录
+
+遇到以下任一情况就停止后续危险测试：
+
+- Web 面板打不开或持续加载。
+- Bot 状态不是 `spawned`，或游戏里出现重复 Bot。
+- 后台显示成功但游戏行为完全不一致。
+- 停止动作后仍继续移动、追击或攻击。
+- 日志出现密码、API key、access token 或 client token。
+
+每轮只记录：启动命令与时间、终端关键错误、Web snapshot、游戏内实际行为、对应 Action/Command History。不要把聊天模型的总结当作测试结果。
 
 ## 1. 测试入口怎么选
 
@@ -20,7 +142,10 @@
 
 不要只相信聊天模型的自然语言总结。关键结果以工具原始 JSON、调试面板状态、游戏内真实行为为准。
 
-## 2. 启动前准备
+## 2. 启动与配置详细参考
+
+<details>
+<summary>展开完整环境变量、Web 安全和面板说明</summary>
 
 确认 Node.js 为 22 或更高版本。项目 `.nvmrc` 默认使用 22，CI 另验证 Node 24；Node 20 已不再受支持。
 
@@ -40,7 +165,9 @@ cmd /c npm run build
 
 ```powershell
 cd C:\xiaoli\moony-mcbot
-Copy-Item .env.local.example .env.local
+if (-not (Test-Path .env.local)) {
+  Copy-Item .env.local.example .env.local
+}
 ```
 
 然后打开 `.env.local`，填入你的账号、密码和可选 AI API key。
@@ -170,7 +297,7 @@ http://127.0.0.1:4637
 
 `agent.stateSnapshot` 的回归预期：`selfState` 的位置、朝向、运动、生命、饥饿、氧气、手持物、护甲、空槽、食物、工具和物品汇总，`localWorld.terrain` 的脚下/准星方块，以及玩家/非玩家 `entities` 来自统一 adapter 快照；可见方块、效果和 pathfinder 状态仍可能来自 Mineflayer。`observe.nearbyPlayers` 的公开返回结构保持不变，不会额外暴露内部实体 ID。
 - `Last Action Result` 会显示最近一次按钮操作的原始 JSON 结果。
-- `Command History` 当前显示 `move.stopFollow` 从 MCP、Web 或 Agent 发起的统一记录，包括 source、requestId、耗时和 `executed` / `failed`。它不保存原始输入；`executed` 不是游戏确认。
+- `Command History` 当前显示 `move.stopFollow`、`interact.eat`、`inventory.holdByCategory` 与 `interact.openDoor` 从 MCP、Web 或 Agent 发起的统一记录，包括 source、requestId、耗时和 `executed` / `failed`。它不保存原始输入；`executed` 不是游戏确认。
 - `Action History` records the latest Web quick actions with timestamp, action name, sanitized payload, result, and error status. Payload/result/error are recursively copied and redacted before storage; the endpoint response remains unchanged. Use it when remote-control testing makes in-game feedback hard to see.
 - `Prompt Profile` shows the active prompt profile path. After editing `C:\xiaoli\memory\prompts\mcbot-prompt-profile.json`, click `Reload Prompt` and check `Last Action Result.updatedChatAiConfigs`.
 - `Shared Chat Memory` shows `C:\xiaoli\memory\chat-summary-state.json`, pending counts, summary threshold, and whether the memory summarizer has an API key.
@@ -208,6 +335,8 @@ Get-CimInstance Win32_Process -Filter "name = 'node.exe'" | Select-Object Proces
 
 注意：这个调试面板不是独立网站，它跟 MCP server 同进程启动。只打开浏览器不会自动启动面板。
 
+</details>
+
 ### 2.1 Raw Action Runner
 
 Web 调试面板里的 `Raw Action Runner` 是一个受控 JSON 调试入口，用来替代一部分 MCP Inspector 手填参数的场景。
@@ -220,7 +349,7 @@ Web 调试面板里的 `Raw Action Runner` 是一个受控 JSON 调试入口，�
 4. 保持 `Inject selected botId` 勾选，通常就不需要在 JSON 里手写 `botId`
    - 当前动作选择、JSON 和勾选状态会保存在浏览器；刷新页面后仍会保留
 5. 点击 `Run JSON Action`
-6. 看 `Last Action Result` 和 `Action History`；执行 `stop-follow` 时同时看 `Command History`
+6. 看 `Last Action Result` 和 `Action History`；执行 `stop-follow`、`eat-food`、`hold-category` 或 `open-door` 时同时看 `Command History`
 7. 需要保留测试证据时，点 `Copy Result` 复制最近结果，或点 `Copy JSON` 复制当前 raw 参数
 8. 需要保存整轮测试记录时，点顶部 `Copy History` 或 `Download History` 导出当前 `Action History`
 9. 开始新一轮测试前，可以点顶部 `Clear History` 清空当前 bot 的历史；清理动作本身会留下记录
@@ -236,7 +365,9 @@ Web 调试面板里的 `Raw Action Runner` 是一个受控 JSON 调试入口，�
 
 ## 2.2 统一命令试点检查
 
-当前只有 `move.stopFollow` 接入统一 CommandDispatcher；这项检查不要求测试其他动作。
+当前 `move.stopFollow`、`interact.eat`、`inventory.holdByCategory` 与 `interact.openDoor` 已接入统一 CommandDispatcher。三个调用入口仍保留自己的公开返回契约，Command History 只补充统一执行证据。
+
+### 停止跟随
 
 1. 在 Web 面板选中已存在的 bot，点击 `Stop Follow`。
 2. `Last Action Result` 应保持原 body：`stopped=true`、`message="Stopped following"`。
@@ -245,20 +376,63 @@ Web 调试面板里的 `Raw Action Runner` 是一个受控 JSON 调试入口，�
 5. 刷新 Web 面板，最新记录的 `source` 应变成 `mcp`。使用不存在的 botId 调用时，MCP 仍应返回 `isError=true`；该失败属于另一个 botId，不会混进当前所选 bot 的面板历史，失败历史记录由离线集成测试覆盖。
 6. 如果能观察游戏，再确认小狸实际停下。`status="executed"` 只证明停止 handler 已运行，不证明服务器已确认角色静止。
 
-Agent 来源和三入口兼容已有离线集成测试覆盖：
+### 进食
+
+1. 确保背包里有可吃食物且饥饿值未满，在 Web 点击 `Eat`。
+2. `Last Action Result` 应继续返回 `{ botId, action: "eatFood", result }`，Command History 最新记录应为 `commandId="interact.eat"`、`source="web"`。
+3. 再用 MCP 调用 `interact.eat`；成功文本仍应以 `Ate` 开头，失败仍应设置 `isError=true`。
+4. `status="executed"` 只表示客户端动作 handler 返回；是否实际吃下仍看游戏画面、饥饿值和 Adapter `eat_food` 记录。
+
+### 按类别持有物品
+
+1. 确保背包里有剑、斧、镐或食物，在 Web 点击 `Hold Category` 并选择一种类别。
+2. `Last Action Result` 应继续返回 `{ action: "hold-category", result }`，不能因为统一命令而额外出现 `botId`；Command History 最新记录应为 `commandId="inventory.holdByCategory"`、`source="web"`。
+3. 用 MCP 调用 `inventory.holdByCategory`，例如 `category="sword"`；成功文本仍以 `Equipped` 开头，刷新面板后 source 应为 `mcp`。
+4. 在 Raw Action Runner 向 `hold-category` 发送 `{"category":"hoe"}`；应走原 HTTP 错误并写入失败的 Action History，但不能新增 Command History，因为输入尚未通过 Web 边缘校验。
+5. 如果能观察游戏，再确认小狸切到该类别的最佳物品。`status="executed"` 不代替游戏画面或 Adapter `hold_item_by_category` 结果。
+
+### 开门
+
+1. 让小狸准星对着门或站在门附近，在 Web 点击 `Open Door`。
+2. `Last Action Result` 应继续返回 `{ botId, action: "openDoor", result }`；Command History 最新记录应为 `commandId="interact.openDoor"`、`source="web"`。
+3. 用 MCP 调用 `interact.openDoor`，可省略 reach/radius；原 MCP schema 应补成 `4.5` / `6`，成功文本和 `isError` 语义不变，刷新面板后 source 应为 `mcp`。
+4. Web 省略 reach/radius 时仍由 Adapter 使用默认值，不应因 canonical 层套用 MCP 范围而改变 HTTP 响应。
+5. 检查 Adapter 最近动作出现 `open_door`，并观察游戏内门是否切换。`status="executed"` 只表示 handler 返回，不代表门状态已由服务器确认。
+
+Agent 来源、参数边界和四个命令的三入口兼容已有离线集成测试覆盖：
 
 ```powershell
-npx tsx --test test/command-dispatcher.test.ts test/stop-follow-command-integration.test.ts
+npx tsx --test --import ./scripts/test-setup.ts test/command-dispatcher.test.ts test/action-command-set.test.ts test/stop-follow-command-integration.test.ts test/eat-command-integration.test.ts test/hold-category-command-integration.test.ts test/open-door-command-integration.test.ts
 ```
 
-## 2.3 当前积压待测清单
+## 2.3 当前积压待测清单（首次启动跳过）
+
+<details>
+<summary>展开完整积压清单</summary>
 
 本轮新增待测项：
 
 - [ ] Web 面板安全：本机 `127.0.0.1` 无 token 应可打开；设置非回环地址但不提供 `MCBOT_DEBUG_WEB_AUTH_TOKEN` 时启动应拒绝；带 token 访问 API 应成功，错误 token 或未允许的 `Origin` 应返回 `401/403`，超大 action 请求应返回 `413`。
 - [ ] Agent 状态一致性：设置一个带两个 milestone 的目标并启动跟随，比较 `agent.framework.status`、`agent.trace.summary`、`agent.goal.status` 与 `agent.stateSnapshot`；goal、current milestone、active task、runtimeState 应一致，完整快照中的 `selfState`、`localWorld`、`entities`、`taskContext` 和 `memorySummary` 不应缺失。停止跟随后再次查询，active task 应为空；通过 `agent.runOnce` 产生多步计划时，`queuedActions`、`queuedStepCount` 与 `queuedLegacySteps` 应对应同一队列。
-- [ ] Agent 事件一致性：执行一次目标设置、跟随启动和停止，比较 `agent.framework.status.snapshot.executionEvents`、`agent.trace.summary.recentEvents` 与 `agent.events.tail`；事件类型、顺序和最后一条动作证据应一致，事件数量超过 20 条时只保留最近 20 条。
+- [ ] Agent executor 生命周期：将一个测试 Bot 配为 `mode=auto` 并确认 `agent.status.executorAttached=true`，再切换为 `manual` 确认立即变为 `false` 且冷却到期后不再出现新 planner tick；切回 `auto` 后不应出现重复 loop。让一次 planner 调用正在执行时按 `Ctrl+C`，shutdown 应停止新 tick，并在当前被跟踪 Promise 结束后完成 flush。配置删除/停用不会取消已开始的 executor run 本身，这是兼容边界，不应误判为取消测试通过。
+- 本轮的 Agent timeout/tick 协调迁移只改变内部所有权，不新增游戏侧验收；`test/agent-blackboard.test.ts` 已覆盖同 Bot timeout 替换/清除/过期和 tick 冷却边界。实服测试仍按上一条观察 executor loop、Agent 事件与 shutdown，不需要额外填写参数。
+- 本轮的 planner 冷却迁移同样只改变内部所有权；`test/agent-blackboard.test.ts` 已覆盖首次请求、恰好到期、时钟回退和旧配置诊断时间戳同步。配置中的 `lastPlanAt` 仍可在状态里查看，但只是诊断镜像；并发 planner 请求、请求取消和执行队列语义没有改变，不新增游戏侧验收。
+- 本轮的任务历史 Store 迁移不新增游戏动作验收；`test/agent-task-history-store.test.ts` 已覆盖多 Bot 隔离、深拷贝、20 条上限、替换、清空和删除，`test/chat-config-reload.test.ts` 覆盖既有 `memory.taskHistory` 恢复。后续手测只需在 Agent 状态一致性场景中确认任务完成后历史仍可见、重启后仍保留，不需要额外游戏动作。
+- 本轮的 task progress 节流迁移不新增游戏动作验收；`test/agent-blackboard.test.ts` 覆盖只读判定、严格 1200ms 边界、详情/任务变化、时钟回退和按 Bot 清理。需要观察事件时仍按 Agent 事件一致性场景检查 `task_progress` 的 payload/顺序；本轮不改变事件发布方式，也不代表 planner 或完整 Agent tick 已迁移。
+- 本轮的战略生命周期去重迁移不新增游戏动作验收；`test/agent-blackboard.test.ts` 覆盖普通提示首次/重复/事件替换、完成汇报只读判定与成功记账、两类状态隔离，以及配置删除清理。后续仍按 Agent 事件一致性场景确认目标完成/放弃后最多汇报一次；本轮不改变聊天文本、目标选择、事件历史或 planner 行为。
+- 本轮的库存变化摘要基线迁移不新增游戏动作验收；`test/agent-blackboard.test.ts` 覆盖首次建基线、重复抑制、变化、回变和 Agent 配置删除清理，`test/self-guard-state.test.ts` 继续覆盖摘要稳定排序。仍按 self-guard Adapter 周期状态场景改变一次背包并确认只出现一条 `inventory_changed`；本轮不改变摘要、事件 payload、库存动作或持久化。
+- 本轮的空闲社交尝试冷却迁移不新增游戏动作验收；`test/agent-blackboard.test.ts` 覆盖旧时间戳初值、重复抑制、精确边界、时钟回退和配置删除清理，`test/idle-social-policy.test.ts` 继续覆盖候选筛选与评分。仍按“空闲白名单社交 Adapter 选择”场景观察目标、任务和短句；本轮不改变候选、冷却时长、失败尝试占用、转头、聊天或持久化。
+- 本轮的玩家/地点记忆 Store 迁移也不新增游戏动作验收；`test/agent-game-memory-state-store.test.ts` 已覆盖多 Bot 隔离、输入/输出副本、共享基线、严格较新合并、同时间戳聚合、清空和删除，`test/chat-config-reload.test.ts` 覆盖 Judy 与 home 的恢复及配置删除清理。可选实机回归只需重启后确认 `memory.status` 和 Web `Shared Game Memory` 仍显示同一批记录，不需要重新创建地点或改变 Voice 读取方式。
+- 本轮的 `TerritoryConfigStore` 迁移不新增游戏动作验收；`test/territory-config-store.test.ts` 覆盖默认值、多 Bot 隔离、输入/输出副本、替换和删除，`test/chat-config-reload.test.ts` 覆盖完整配置恢复、热重载替换和配置删除后的默认值。领地入侵者选择、presence 清理、警告冷却和升级行为仍按原 7.9 场景验证；本轮没有改变这些游戏侧行为。
+- 本轮的 `TerritoryPresenceStore` 迁移同样不新增游戏动作验收；`test/territory-presence-store.test.ts` 覆盖复合 key 读写、多 Bot 隔离、副本、active-key prune 和按 Bot 清理，既有 `test/territory-presence.test.ts` 继续覆盖纯入侵者决策。7.9 的游戏侧领地场景仍需确认玩家离开后可重新触发警告、冷却和主人在场升级；本轮只修复运行时状态所有权与配置删除清理。
+- 本轮的 `territory-warning-state` 迁移不新增操作步骤；`test/territory-warning-state.test.ts` 覆盖首次警告、冷却窗内抑制、精确冷却/升级边界、主人不在时等待、禁用/重复升级、旧 falsy 时间戳和非法时间 fail-closed。仍按 7.9 验证真实聊天与战斗，尤其确认冷却到期的 tick 先再次警告，只有后续 tick 才允许升级；事件文案、返回值和决斗目标应保持原样。
+- 本轮的 `TerritoryRuntime` 收口不新增操作步骤；`test/territory-runtime.test.ts` 覆盖 presence prune、状态写回、hook 调用顺序、离开重入、多 Bot/clear 和 hook 抛错。仍按 7.9 做真实聊天、事件和决斗验收，因为具体 hooks 仍在 `action-tools.ts`，离线测试不代表服务器已确认战斗效果。
+- 本轮的社交与人格短期状态收口不新增游戏动作验收；`test/social-runtime-state-store.test.ts` 覆盖多 Bot 隔离、互动初始化、主动发言时间、回复上下文副本、心情、场景冷却的精确边界/时钟回退和按 Bot 清理。现有动态 AI、聊天记忆和 self-guard 场景仍可用于确认外部行为没有变化；这些状态是进程内短期状态，重启后不恢复，也不代表共享 memory 已写入新的字段。
+- 本轮的聊天监听资源生命周期收口不新增游戏动作步骤；`test/chat-listener-lifecycle.test.ts` 覆盖订阅隔离、Runtime 引用匹配、解绑顺序/失败、watchdog 与 shutdown，`test/chat-listener-lifecycle-integration.test.ts` 覆盖 MCP 启用、重复启用和停用接线。能看游戏时仍按“聊天回显与监听”场景确认白名单消息只触发一次，并在 `chat.listener.status.attached` 观察启停；离线通过不代表真实服务器回显或断线重连已经确认。
+- [ ] Agent 事件一致性：执行一次目标设置、跟随启动和停止，比较 `agent.framework.status.snapshot.executionEvents`、`agent.trace.summary.recentEvents` 与 `agent.events.tail`；三者应显示同一组最近 20 条可观察事件，类型、写入顺序和最后一条动作证据一致。内部 `recentEvents` 可能额外包含 `tick` / `perception_updated`，不作为调试尾部比较对象。
 - [ ] Adapter 低风险动作：在已连接 Mineflayer bot 上依次调用 `observe.self`、`observe.inventory`、`chat.send`、`inventory.holdByCategory`、`interact.openDoor` 和 `interact.dropHeld`；确认结果正常，并在 `client.adapter.status.recentActions` 看到对应动作记录。`chat.sendVerified` 单独验证收到回显时 `echoed=true`，超时或无回显时 `echoed=false`。
+- [ ] 统一按类别持有：分别从 Web 与 MCP 调用 `inventory.holdByCategory`，确认旧返回体/文本不变、Command History source 正确、Adapter 最近动作出现 `hold_item_by_category`，且游戏内实际切到对应类别的最佳物品；再按 2.2 用非法 Web 类别确认只产生 Action History 错误、不产生假的 Command History。Agent source 与缺失 bot 路径已有离线测试，不要求依赖 planner 复现。
+- [ ] 统一开门：分别从 Web 与 MCP 调用 `interact.openDoor`，确认旧 `{ botId, action: "openDoor", result }` / 文本不变、Command History source 正确、Adapter 最近动作出现 `open_door`，且游戏内门实际切换；MCP 省略参数应使用 4.5/6，Web 省略参数应继续交给 Adapter 默认值。Agent 数值字符串转换与缺失 bot 路径已有离线测试，不要求依赖 planner 复现。
 - [ ] Agent 紧凑状态摘要：通过 `agent.runOnce` 让 planner 只执行一次 `observe.self`，确认执行结果包含 activity、health、food、held、bestFood、players 和 entities，且不出现 `state=unavailable`。这不是 MCP `observe.self` 的完整 JSON 契约；真实 Mineflayer 应继续显示实际血量/饥饿值，未来 Adapter 缺字段时允许显示 `unknown`。
 - [ ] Planner 上下文投影回归：使用真实模型分别执行一次跟随、附近可见挖矿和失败后的 repair；确认规划仍能使用生命/背包/距离/当前任务信息，同时服务日志或代理抓包中的请求不再出现 `完整状态JSON`、绝对 `position`、`entityId`、任务 `params`、记忆 `notes` 或事件 `payload`。`agent.stateSnapshot` 和 Web 本地调试快照仍应保留完整字段。
 - [ ] AI 闲聊动态状态与准星 focus：启用 `chat.ai` 后，让 bot 分别处于手持物品、背包带食物、玩家近处、准星对准方块和准星对准实体的状态，再用唤醒词询问当前状态；同时调用 `perception.focus` 核对原始结果。实体在视野中心且无遮挡时应得到 `focusType=entity`，更近方块挡在实体前时应得到 `focusType=block`，侧面或超过 reach 的实体不能抢占 focus。检查回复使用的生命、饥饿、手持物和环境信息与游戏一致，且连接正常时不退化为仅含“待命/未知”的四行 fallback。精确实体注视的数据采集仍是 Mineflayer 增强，本项不代表未来 Modded Client 已支持实体 focus；模型措辞可变化，不能只按固定句子验收。
@@ -267,7 +441,10 @@ npx tsx --test test/command-dispatcher.test.ts test/stop-follow-command-integrat
 - [ ] Agent 超时恢复观察：让一个 Agent 任务进入 `task_timeout`，再检查 `agent.trace.summary` / `agent.framework.status`；恢复动作应执行 `observe.nearbyEntities`，不能出现缺少 `yaw/pitch` 的 `player.look` 或 `Unsupported agent tool 'player.look'`。该路径已有离线回归测试，游戏侧只需确认事件与摘要可见。
 - [ ] 安全移动：让 bot 跟随玩家绕过方块，确认跟随过程中不会挖方块、搭一格高塔或放脚手架；目标移动跨方块时 Adapter 最近动作应出现 `pursue_entity`，进入最小距离或停止时出现 `stop_movement`；Pathfinder 不可用、拒绝目标，或首轮/后续规划返回 `noPath` / `timeout` / 长绕行时不得继续直走，Adapter 最近动作应记录失败，follow task 应结束且游戏聊天只出现一次“我跟不上你啦”；再按 7.10 单独调用 `mine.digNearestVisible`，确认显式挖矿仍可工作且不会破坏沿途方块。
 - [ ] 旧可见扫描与批量采矿：对同一处无遮挡矿石先调用 `block.findVisible`，确认按距离排序且遮挡矿石不返回；再分别触发 MCP `mine.collectVisible`、Agent `mine.collectVisible` 和“清理玩家附近可见矿”，确认扫描数量、射线过滤、接近、逐块显式挖掘、`no_visible_target` / `pathfinder_unavailable` / `approach_timeout` 停止原因与游戏行为一致。寻路途中不得挖路或搭路；该项只回归旧 Mineflayer 链，不代表批量采矿已迁入 Adapter。
-- [ ] 固定坐标移动：按 7.9 使用 Web Raw Action Runner 调用 Agent 内部 `move.goToPosition` 移动到空旷坐标，确认无需 Mineflayer 专用坐标参数，Adapter 最近动作出现一次 `move_to_position`，到达后出现 `stop_movement`，Agent task 结束；途中停止后不能再次自行前进。
+- 采矿串行队列迁移本身不新增游戏手测步骤：离线测试已覆盖同 Bot 串行、跨 Bot 并发、失败恢复和 shutdown 单次快照；真实行为仍只按上一项验收，不能把队列测试视为采矿动作确认。
+- [ ] 固定坐标移动：按 7.9 使用 Web Raw Action Runner 调用 Agent 内部 `move.goToPosition` 移动到空旷坐标，确认无需 Mineflayer 专用坐标参数，Adapter 最近动作出现一次 `move_to_position`，到达后出现 `stop_movement`，Agent task 结束；途中停止后不能再次自行前进。连续提交两个目标时，State Snapshot 的 current activity 应切到最新 key，旧目标的迟到失败不得终止新任务。
+- [ ] 定点移动资源生命周期：在固定坐标移动运行中分别执行到达、主动停止、self-guard 停止和进程 `Ctrl+C`；确认 interval 不再继续触发，movement subscription 不重复消费事件，shutdown 先释放 interval 再逐个清订阅。该项只观察 Web 的 Action History、Adapter 最近动作、Agent task/trace 和服务日志，不把 `executed` 当作服务器确认。
+- [ ] 持续行走计时器生命周期：只在平坦、封闭且远离悬崖/岩浆/深水的测试区调用 MCP `movement.walk`，确认时长到达后 Adapter 最近动作出现 `stop_movement`，随后再次启动并立刻调用 `movement.stop`，旧 timer 到期时不得再次影响新动作；运行中的 `Ctrl+C` 应清除 timer，shutdown 后不得再出现停止回调。该项不改变 `movement.walk` 缺少地形前视的限制，也不建议开放默认 Agent 权限。
 - [ ] 白名单汇报目标：让两个白名单玩家同时处于已加载范围，触发 self-guard 追击超时或结束汇报；bot 应朝距离更近且坐标有效的白名单玩家移动，非白名单玩家即使更近也不能成为汇报目标。该项只验证目标选择迁移，不代表反击循环已完全脱离 Mineflayer。
 - [ ] self-guard Adapter 周期状态：将 `lowFood` 临时调到高于当前饥饿值并启用 `autoEat`，确认 Web Agent 事件出现一次 `low_food`，Adapter 最近动作出现 `eat_food` 成功或明确失败；背包没有食物时应有“没有吃的”反馈且不能产生假的成功动作。改变背包内容后应出现 `inventory_changed`。让非自身玩家从范围外首次进入 `nearPlayerDistance` 时仍可按配置概率触发原场景逻辑；持续停留不应被每个 tick 当作重新进入，离开后再次进入才允许产生新的进入机会，缺失、负数或非有限距离快照应被忽略。该项只验证周期快照与自动进食，不代表受伤事件、天气或原生实体反击已迁移。
 - [ ] self-guard reactive 阈值信号：清空短期 tick 状态后同时进入普通低生命和低饥饿阈值，Web Agent 事件应按 `low_health`、`low_food` 顺序各出现一次，payload 的 health、food、hasFood、severity 和 reason 应与状态一致；维持同一状态多个 tick 不得重复。继续降到 critical 应新增一条 critical `low_health`，恢复到普通低生命应新增一条 warning `low_health`，完全恢复不应生成恢复事件；再次进入阈值后才允许重新报告。事件发布和 reactive flags 写入仍在旧编排层，本项不代表完整 tick 已迁移。
@@ -288,12 +465,15 @@ npx tsx --test test/command-dispatcher.test.ts test/stop-follow-command-integrat
 - [ ] Adapter 快捷栏整理：分别验证普通背包、目标快捷栏已占用、缺少某类物品和背包全满四种情况；确认不会覆盖或丢失物品，MCP 返回逐类别 `actions`，聊天指令有明确反馈，并在 Adapter 最近动作看到 `organize_hotbar`。
 - [ ] 准备战斗换槽：背包有铁剑且快捷栏第 1 格被占用时调用 `combat.prepareBattle`，确认占位物进入空槽、铁剑进入第 1 格且工具及时返回；背包全满时应回退到直接持有最佳武器，不能卡住或覆盖物品。
 - [ ] 持续挑战状态机：分别用中文别名和英文实体名发起挑战，确认选中最近的匹配非玩家实体；目标短暂离开视野不应立即结束，持续丢失超过约 2.5 秒应取消；3 格外追击、4.5 格内按约 650ms 冷却攻击，目标死亡后发送“就这”并结束任务；在 Adapter 最近动作核对 `pursue_entity`、`attack_entity` 和停止记录。
+- [ ] 对决资源生命周期：持续对决中分别触发目标死亡、自身死亡、持续丢失、追击失败和进程 `Ctrl+C`；确认每次只结算一次、结束后不再出现 tick/追击/攻击，entity/movement 订阅不重复消费事件。shutdown 只验证本地资源释放与日志顺序，不把游戏画面或 `executed` 当作服务器确认。
 - [ ] 模型超时/失败：让 chat AI 或 planner 使用不可达地址，确认在超时后返回本地 fallback 或明确失败状态，不应无限等待。
 - [ ] 模型取消：请求进行中调用 `chat.ai.configure` 或 `agent.configure` 停用对应功能，确认状态变为 `cancelled`，不会在稍后继续发送旧回复或执行旧规划。
 - [ ] 原子持久化与退出 flush：按“持久化退出回归”一节启动独立进程，在产生配置变更和未满 20 条聊天 pending 后按一次 `Ctrl+C`；确认关闭日志完整、两个 JSON 可解析、没有 `.tmp` 残留，重启后配置与 pending count 均恢复。
 - [x] 致命进程异常协调：`test/process-lifecycle.test.ts` 与 `test/runtime-shutdown-lifecycle.test.ts` 已覆盖 fatal 失败码、幂等 shutdown、signal/fatal 竞争、hook 失败、事件卸载，以及 Web drain 时立即停止动作 runtime；不需要在真实游戏中故意制造崩溃。
 
 这部分是最近新增但还没有完整跑完的回归项。下次能看游戏画面时，优先按这个顺序补测。
+
+</details>
 
 ### 测试记录
 
@@ -363,7 +543,7 @@ npx tsx --test test/command-dispatcher.test.ts test/stop-follow-command-integrat
 - 模组容器、整合包客户端桥接、复杂 mod 工序暂缓：当前还没有稳定测试入口。
 - 需要观察游戏画面的行为效果可以先只看 `Action History`，但最终仍要在游戏内确认真实动作。
 
-## 3. MCP Inspector 常见填写规则
+## 3. MCP Inspector 常见填写规则（可选）
 
 如果使用图形 MCP Inspector，注意这些类型：
 
@@ -592,6 +772,16 @@ hi小狸
 - 游戏里小狸停下。
 - 调试面板或 `agent.trace.summary` 不再显示跟随中的活动任务。
 - Adapter 最近动作包含一次 `stop_movement`，停止后不会因未完成的旧追击 Promise 再次开始前进。
+- 后台检查时可同时看 `Client Adapter` 最近动作、`Recent Events`、`Trace Summary` 和 `State Snapshot`：停止前应能看到当前跟随/追击状态，停止后不应再出现新的 follow pursuit；`Command History` 的 `executed` 只代表停止 handler 返回，不代表服务器确认静止。
+
+### 6.3 进程关闭资源观察
+
+这一项用于验证跟随、定点移动、持续对决、限时直接行走与 Agent executor 生命周期收敛，不要求重新进入游戏：
+
+1. 先让 bot 处于跟随、定点移动、持续对决或 `movement.walk` 状态，并把 Agent 配为 `auto`、确认 `executorAttached=true`；Web 的 `Agent Status`、`State Snapshot` 或 Adapter 最近动作应显示对应活动。定点移动可按 7.9 启动，对决可按 7.8 启动，直接行走必须位于安全封闭区域。
+2. 在运行服务的终端按 `Ctrl+C`，观察日志先停止动作 runtime，再进入 bot 断开、持久化 flush 和 MCP 关闭阶段。
+3. 日志中不应在 shutdown 后继续出现新的 Agent executor tick、follow tick、定点移动 tick、duel tick、限时行走停止回调、追击/攻击动作或新的跟随失败聊天；shutdown 前已经开始的 Agent run 允许完成，并应在 persistence flush 后再结束进程。若订阅清理失败，应有带 botId 和订阅类型的 warning，但其他 shutdown 阶段仍继续。
+4. 重启服务后按正常连接流程检查 bot 状态。该项只验证本地资源释放和日志顺序，不能证明真实服务器已完成断线重连回归。
 
 ## 7. Adapter 动作回归测试
 
@@ -615,8 +805,34 @@ hi小狸
 
 - 小狸切出食物并尝试吃。
 - 工具返回类似 `Ate 'bread'`。
+- Web 面板的 `Client Adapter` 最近动作出现 `eat_food`；这是 Runtime 已调用客户端动作的证据。
+- Web 面板的 `Command History` 出现 `interact.eat`，并按实际入口显示 `mcp`、`web` 或 `agent` source。
+- Command History 的 `executed` 只表示 handler 正常返回；是否真的吃下食物仍以游戏画面、饥饿值变化和 Adapter 结果综合判断。
+
+也可以直接点击 Web 面板的 `吃东西 Eat`。该入口仍使用 `POST /api/action/eat-food`，成功结果应保留 `{ botId, action: "eatFood", result }` 结构，同时继续写入原 `Action History`。
 
 如果饥饿值是满的，Minecraft 可能不允许吃普通食物。测试时最好先让饥饿值下降，或使用可在特殊条件下食用的物品。
+
+### 7.1.1 inventory.holdByCategory
+
+前提：背包里至少有一种可识别的剑、斧、镐或食物。
+
+工具：`inventory.holdByCategory`
+
+```json
+{
+  "botId": "XiaoLi_26.3.3_newnancity",
+  "category": "sword"
+}
+```
+
+通过标准：
+
+- 小狸切到该类别中当前可用的最佳物品。
+- MCP 返回文本以 `Equipped` 开头；Web 返回仍为 `{ action: "hold-category", result }`。
+- Adapter 最近动作出现 `hold_item_by_category`，Command History 出现 `inventory.holdByCategory` 并标出实际 source。
+- `category` 只接受 `sword`、`axe`、`pickaxe` 或 `food`；非法 Web 输入在入口处失败，不应形成一次 canonical 命令记录。
+- Command History 的 `executed` 只表示 handler 正常返回，仍需结合游戏手持物和 Adapter 结果确认。
 
 ### 7.2 interact.rightClick
 
@@ -656,6 +872,8 @@ hi小狸
 
 - 游戏里的门被打开或关闭。
 - 工具返回门的名称和位置。
+- Web `Last Action Result` 保持 `{ botId, action: "openDoor", result }`，Command History 出现 `interact.openDoor` 并标出实际 source。
+- Adapter 最近动作出现 `open_door`；Command History 的 `executed` 仍需结合该结果和游戏内门状态判断。
 
 不覆盖：
 
@@ -801,7 +1019,7 @@ hi小狸
 - 结束后没有残留追击、重复攻击或重连遗留的死亡监听器。
 - Web 面板 Adapter 最近动作中，目标移动时出现 `pursue_entity`，有效攻击出现 `attack_entity`；目标恰好移出 4.5 格造成一次失败记录可以接受，下一次 tick 应继续追击而不是换目标。
 
-当前限制：持续决斗的上层链路已经完全通过 Adapter；当前只有 Mineflayer Adapter 实现了追击和攻击，Modded Client Adapter 尚未实现，因此本测试不代表整合包客户端已支持持续决斗。
+当前限制：持续决斗的 interval、session 元数据和双订阅已由独立生命周期管理，上层动作链也已通过 Adapter；当前只有 Mineflayer Adapter 实现了追击和攻击。生命周期不选择目标、不执行 tick 或动作，离线测试也不能代替真实游戏中的死亡、丢失、追击失败和断线回归，因此本测试不代表整合包客户端已支持持续决斗。
 
 ### 7.9 固定坐标移动
 
@@ -831,8 +1049,9 @@ hi小狸
 6. 选择一个被完整墙体隔断或必须明显长绕行、但不会让 bot 掉落的目标；首轮规划应失败，`move_to_position` 在 Adapter 最近动作中记录 `SafePathError` 对应原因，bot 保持停止。
 7. 选择一条开始时可通行的安全路线，等 bot 已经开始移动后再封住唯一通路；bot 应停止，Adapter 最近动作新增一条失败的 `move_to_position`，错误包含 `continuous route is unavailable or unsafe`。
 8. 封路失败后立即提交另一个可达目标；旧目标的迟到事件不得停止新目标。
+9. 连续目标执行期间展开 `State Snapshot`：`currentActivity.detail` 应反映最后提交的 `goto:...` key；停止或到达后不应继续显示旧 key。该 key 只用于本地相关性门控，不代表服务器已确认移动。
 
-当前限制：固定坐标移动上层已通过 Adapter，且不会在安全 Pathfinder 不可用时退化为直接移动；离线测试已覆盖首轮和后续 `noPath`、`timeout`、长绕行、动态实体位置、目标替换、主动停止及监听清理。真实服务器上的绕障、途中封路和停止行为仍需游戏内回归。容器等待尚未完成迁移，采矿目前只迁移了单块试点。
+当前限制：固定坐标移动上层已通过 Adapter，且不会在安全 Pathfinder 不可用时退化为直接移动；interval 与 movement subscription 由独立生命周期管理，movement correlation key 由另一个独立 Store 管理。离线测试已覆盖首轮和后续 `noPath`、`timeout`、长绕行、动态实体位置、目标替换、主动停止及监听清理。真实服务器上的绕障、途中封路和停止行为仍需游戏内回归。容器等待尚未完成迁移，采矿目前只迁移了单块试点。
 
 ### 7.10 单块采矿安全接近
 
@@ -967,6 +1186,30 @@ hi小狸
 - `low_health`
 
 如果工具返回的 events 和游戏内行为不一致，以游戏内行为和底层工具 JSON 为准，不要让聊天模型总结带偏。
+
+### 9.1 规划请求拆分回归（待你方便时测）
+
+本轮离线测试已覆盖请求体、冷却、错误诊断、计划翻译和完整模拟执行链，不需要现在进游戏。以后先完成第 0 节，再补下面这一项：
+
+1. 记录当前 Agent 模式。确认 planner 地址、模型和 key 有效，Agent 已启用，`executorAttached=true`；`assist` 或 `auto` 均可，`manual` 不消费排队动作。
+2. 先用已验证的 `Follow Judy` 让小狸跟随，再在 Web 工具运行器或 MCP 调用 `agent.runOnce`：
+
+   ```json
+   {
+     "botId": "XiaoLi_26.3.3_newnancity",
+     "userInstruction": "停止跟随，然后待命，不要做其他动作。",
+     "requester": "Judy"
+   }
+   ```
+
+3. 检查 `agent.status.lastPlannerRequest.state=success`。查看原始 `plan` 和 `executionResult`，确认计划是停止跟随；`applied_directive_...` 只表示计划已入黑板，尚不是执行成功。
+4. 等待一个 executor 周期，在 Command History 查 `move.stopFollow`、`source=agent` 的结果，同时确认游戏内确实停下。有 handler 成功记录但游戏未停，仍判为未通过。
+5. 用 `agent.framework.status` 查看 `snapshot.executionEvents`，再用 `agent.events.tail` 和 `agent.trace.summary` 对照；`planner_requested`、`planner_result` 和对应 Skill 的 `task_finished` 或 `task_failed` 应在三处使用同一组可观察事件。`snapshot.recentEvents` 是内部规范化输入流，可能额外包含感知刷新，不作为三处调试出口的唯一依据。
+6. 若请求失败，保留 `lastPlannerRequest` 和原始错误。未结束冷却时再次调用应提示 `cooling down`；失败请求不能伪报计划成功。最后恢复原模式，按第 10 节清理目标。
+
+没有真实服务器或 API 时，只需开发者执行 `npm test -- test/openai-agent-planner.test.ts test/planner-request-runner.test.ts test/agent-plan-to-directive.test.ts test/agent-planner-integration.test.ts`；它使用隔离目录、临时本机模型服务和模拟客户端，不读取正式账号。
+
+2026-10-18 补充：请求级离线回归已覆盖超时、信号取消、失效后迟到回复、同 Bot 请求交错及多 Bot 隔离。目前只保证旧诊断不覆盖新诊断；“取消后绝不新增动作”还没有完成，不能把这轮测试当作通过证据。完整轮次取消的手测应等 [生产注入提案](strategic-planner-injection-design.md) 落地后再补，届时使用受控模型回复验证目标、队列和聊天均未新增，不需要现在人为制造云端延迟。
 
 ## 10. 清理测试状态
 
@@ -1134,7 +1377,7 @@ $env:MCBOT_AI_API_KEY = "<your-ai-api-key>"
 - MCBOT_AI_API_BASE_URL 是否包含 /v1。
 - MCBOT_DEFAULT_CHAT_AI_MODEL 是否是该网关实际支持且会返回 message.content 的 chat 模型。
 - 如果一个模型一直返回空内容，先换一个明确支持普通 chat completion 输出的模型做对照。
-## 连接生命周期回归
+## 12. 连接生命周期回归
 
 自动化部分不需要进入游戏，用于覆盖最容易出错的竞态和监听器所有权：
 
@@ -1161,7 +1404,7 @@ npx tsx --test test/mc-client-service-lifecycle.test.ts test/client-adapter-life
 
 安全移动回归：跟随、定点移动、追击和 `mine.digNearestVisible` 的接近阶段使用不可挖掘、不可搭路/搭柱的 Pathfinder 配置。定点移动与实体追击在 Pathfinder 缺失、拒绝目标，或首轮及后续规划 `noPath`、`timeout`、长绕行时会停止并记录失败，不再切换为直接移动；跟随上层只反馈一次“我跟不上你啦”。持续失败以 `movementId` 关联当前任务，旧目标事件不能停止新目标。`movement.walk` / `wander_area` 是限时直接前进，不属于这条安全 Pathfinder 保证，默认权限保持关闭。单块工具只会在进入可触及范围并复核目标后显式挖目标方块；`mine.collectVisible` 等三个批量入口尚未迁移，仍需分开看待。
 
-## 持久化退出回归
+## 13. 持久化退出回归
 
 这项不要求进入游戏，但必须从一个可按 `Ctrl+C` 的独立 PowerShell 启动，不要借 Cherry Studio 或 Inspector 代管进程：
 
@@ -1251,11 +1494,11 @@ npx tsx --test test/auth-service.test.ts test/bot-runtime-connection.test.ts
 4. 执行一次正常断开，再重新连接；旧连接不得在新连接后重复 spawn，session server 握手不得报 token/profile 错误。
 5. 若认证失败，保留脱敏后的状态码、错误消息和连接代次，不要把正式凭据发到 issue 或测试记录中。
 
-当前状态：待手动验证。Yggdrasil 1.8.0 仍带有被审计标记的 `uuid@10`，本项只验证兼容性，不代表依赖告警已修复。
+当前状态：待手动验证。本机 2026-08-14 的 `npm audit --omit=dev` 返回 0 项，但这不能替代真实认证、session server 或游戏行为验收。
 
-## 审计后真实服务器回归门槛
+## 14. 真实服务器回归门槛
 
-以下项目不能由当前 Fake Adapter 和离线测试证明。完成 [2026-07-31 全项目架构与实现审计](project-audit-2026-07-31.md) 的阶段 A 修复后，按顺序执行；任何一项失败都先保留日志、Web action history 和 `bot.status`，不要继续测试后续危险动作。
+以下项目不能由当前 Fake Adapter 和离线测试证明。按顺序执行；任何一项失败都先保留日志、Web action history 和 `bot.status`，不要继续测试后续危险动作。
 
 | 状态 | 场景 | 游戏内观察 | 后台证据 |
 | --- | --- | --- | --- |

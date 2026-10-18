@@ -4,15 +4,15 @@ import { z } from "zod";
 import * as Pathfinder from "mineflayer-pathfinder";
 import { getDefaultAgentToolIds, resolveAgentToolAllowlist } from "../catalog/tool-catalog.js";
 import { registerAgentCoreTool } from "../catalog/mcp-tool-registration.js";
-import { CommandDispatcher } from "../commands/command-dispatcher.js";
+import { ActionCommandSet } from "../commands/action-command-set.js";
 import type {
   CommandHistoryFilter,
-  CommandInvocationResult,
-  CommandOutput,
-  CommandSource
+  CommandInvocationResult
 } from "../commands/command-dispatcher.js";
 import { BotRegistry } from "../runtime/bot-registry.js";
+import type { BotRuntime } from "../runtime/bot-runtime.js";
 import { createChatEventDeduplicator } from "../runtime/chat-event-dedup.js";
+import { ChatListenerLifecycle } from "../runtime/chat-listener-lifecycle.js";
 import {
   decidePlayerAttackAction,
   extractRequestedPlayerName,
@@ -23,11 +23,23 @@ import {
   findChallengeTargetSnapshot
 } from "../runtime/duel-session.js";
 import type { DuelSessionState } from "../runtime/duel-session.js";
+import { DuelSessionLifecycle } from "../runtime/duel-session-lifecycle.js";
+import { AgentExecutorLifecycle } from "../runtime/agent-executor-lifecycle.js";
+import {
+  AgentTaskHistoryStore,
+  type AgentTaskHistoryRecord
+} from "../runtime/agent-task-history-store.js";
 import { decideFollowMovement, getFollowPursuitFailure } from "../runtime/follow-session.js";
+import { FollowSessionLifecycle } from "../runtime/follow-session-lifecycle.js";
+import { PositionMovementLifecycle } from "../runtime/position-movement-lifecycle.js";
+import { systemTimeoutScheduler } from "../runtime/timeout-scheduler.js";
+import { WalkTimerLifecycle } from "../runtime/walk-timer-lifecycle.js";
 import { SafePathError } from "../runtime/mining-approach.js";
+import { MiningTaskQueue } from "../runtime/mining-task-queue.js";
 import { getCurrentMovementFailure } from "../runtime/movement-event-routing.js";
 import { selectNearestWhitelistedPlayer } from "../runtime/player-selection.js";
 import { decidePositionMovement, PositionCoordinates } from "../runtime/position-movement.js";
+import { MovementIntentStore } from "../runtime/movement-intent-store.js";
 import { isDimensionCompatible, requireSelfLocation } from "../runtime/self-location.js";
 import { decideIdleFollowAction } from "../runtime/idle-follow-policy.js";
 import { selectIdleSocialTarget } from "../runtime/idle-social-policy.js";
@@ -40,7 +52,7 @@ import {
 import type { ContainerInventoryClient } from "../runtime/container-inventory.js";
 import { buildDynamicAiStateText } from "../runtime/dynamic-ai-state.js";
 import { selectFocusedEntity } from "../runtime/focus-perception.js";
-import { evaluateTerritoryPresence } from "../runtime/territory-presence.js";
+import { TerritoryRuntime } from "../runtime/territory-runtime.js";
 import { buildSalientActors } from "../runtime/salient-perception.js";
 import {
   evaluateSelfGuardAlertCooldown,
@@ -60,7 +72,11 @@ import {
   resolveRetaliationTarget,
   selectLikelyRetaliationAttacker
 } from "../runtime/self-guard-retaliation.js";
-import type { InventorySnapshot } from "../runtime/client-adapter.js";
+import type {
+  HoldItemByCategoryInput,
+  InventorySnapshot,
+  OpenDoorInput
+} from "../runtime/client-adapter.js";
 import {
   canSeeBlockByRay,
   equipBestToolForBlock,
@@ -102,11 +118,20 @@ import {
   SelfGuardConfigStore,
   type SelfGuardConfig
 } from "../config/self-guard-config-store.js";
-import { PersistedChatConfigRepository } from "../config/persisted-chat-config-repository.js";
 import {
-  buildPlannerContextProjection,
-  buildPlannerMemorySummary
-} from "../runtime/planner-context-projection.js";
+  TerritoryConfigStore,
+  type TerritoryConfig
+} from "../config/territory-config-store.js";
+import { PersistedChatConfigRepository } from "../config/persisted-chat-config-repository.js";
+import { extractAiText, summarizeEmptyAiChoice } from "../runtime/openai-response-text.js";
+import {
+  OpenAiAgentPlanner,
+  type AgentPlan,
+  type AgentPlanRequester,
+  type AgentPlanStep
+} from "../agent/openai-agent-planner.js";
+import { buildDirectiveFromPlan } from "../agent/plan-to-directive.js";
+import { runAgentPlannerRequest } from "../agent/planner-request-runner.js";
 import { drainPromiseQueue } from "../runtime/promise-queue.js";
 import { InvalidatableTaskQueue } from "../runtime/invalidatable-task-queue.js";
 import {
@@ -122,6 +147,7 @@ import {
   type RetaliationSessionState
 } from "../runtime/retaliation-state-store.js";
 import { SelfGuardRuntimeStateStore } from "../runtime/self-guard-runtime-state-store.js";
+import { SocialRuntimeStateStore } from "../runtime/social-runtime-state-store.js";
 import { CombatExecutionStateStore } from "../runtime/combat-execution-state-store.js";
 import { applyPathfinderMovementProfile } from "../runtime/pathfinder-movement-profile.js";
 import type { PathfinderMovementProfile } from "../runtime/pathfinder-movement-profile.js";
@@ -141,8 +167,6 @@ import type {
   AgentTaskRuntime,
   AgentTaskSource,
   AgentTaskStatus,
-  StrategicAction,
-  StrategicDirective
 } from "../agent/types.js";
 import {
   getSharedChatMemoryPromptText,
@@ -150,8 +174,12 @@ import {
   isHighRiskChatMemoryClaim,
   recordSharedChatMemory
 } from "../memory/chat-memory.js";
+import {
+  AgentGameMemoryStateStore,
+  type AgentMemoryPlaceRecord,
+  type AgentMemoryPlayerProfile
+} from "../memory/agent-game-memory-state-store.js";
 import { SharedGameMemoryStore } from "../memory/game-memory-store.js";
-import { mergeNewerMemoryRecords } from "../memory/merge-records.js";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import os from "node:os";
@@ -197,68 +225,6 @@ interface AttackNearestDebugEntity {
   excludedReason?: string;
 }
 
-interface ChatListenerHandler {
-  botRef: unknown;
-  unsubscribe: () => void;
-}
-
-interface TerritoryConfig {
-  enabled: boolean;
-  placeIds: string[];
-  requiredTags: string[];
-  radius: number;
-  warningCooldownMs: number;
-  warningMessage: string;
-  ownerPresencePolicy: "always" | "owner_nearby_only";
-  escalationEnabled: boolean;
-  escalationDelayMs: number;
-}
-
-interface TerritoryPresenceState {
-  enteredAt: number;
-  warnedAt: number;
-  escalatedAt?: number;
-}
-
-interface AgentPlanStep {
-  tool: string;
-  arguments?: Record<string, unknown>;
-  speak?: string;
-}
-
-interface AgentMemoryPlayerProfile {
-  playerName: string;
-  alias?: string;
-  relation?: "owner" | "whitelist" | "neutral";
-  notes?: string;
-  tags?: string[];
-  lastSeenAt?: number;
-  updatedAt: number;
-}
-
-interface AgentMemoryPlaceRecord {
-  placeId: string;
-  label: string;
-  x: number;
-  y: number;
-  z: number;
-  dimension?: string;
-  notes?: string;
-  tags?: string[];
-  updatedAt: number;
-}
-
-interface AgentMemoryTaskHistoryRecord {
-  id: string;
-  taskType: string;
-  status: AgentTaskStatus;
-  source: AgentTaskSource;
-  goal: string;
-  detail?: string;
-  lastError?: string;
-  createdAt: number;
-  finishedAt: number;
-}
 
 interface PromptProfile {
   systemPrompt: string;
@@ -293,13 +259,20 @@ interface PromptProfile {
   };
 }
 
-const walkTimers = new Map<string, ReturnType<typeof setTimeout>>();
-const commandDispatchers = new WeakMap<BotRegistry, CommandDispatcher>();
-const followLoops = new Map<string, ReturnType<typeof setInterval>>();
-const followSessions = new Map<string, FollowSession>();
-const followMovementHandlers = new Map<string, { unsubscribe: () => void }>();
+const actionCommandSets = new WeakMap<BotRegistry, ActionCommandSet>();
+const followSessionLifecycle = new FollowSessionLifecycle<ReturnType<typeof setInterval>, FollowSession>(systemIntervalScheduler);
+const positionMovementLifecycle = new PositionMovementLifecycle(systemIntervalScheduler);
+const duelSessionLifecycle = new DuelSessionLifecycle<
+  ReturnType<typeof setInterval>,
+  DuelSessionState
+>(systemIntervalScheduler);
+const agentExecutorLifecycle = new AgentExecutorLifecycle(systemIntervalScheduler);
+const walkTimerLifecycle = new WalkTimerLifecycle(systemTimeoutScheduler);
 const chatListenerConfigStore = new ChatListenerConfigStore();
-const chatHandlers = new Map<string, ChatListenerHandler>();
+const chatListenerLifecycle = new ChatListenerLifecycle<
+  ReturnType<typeof setInterval>,
+  BotRuntime
+>(systemIntervalScheduler);
 const chatEventDeduplicator = createChatEventDeduplicator();
 const chatAiConfigStore = new ChatAiConfigStore({
   createDefaults: () => ({
@@ -321,6 +294,7 @@ const chatAiTaskQueue = new InvalidatableTaskQueue({
     });
   }
 });
+const agentPlanner: AgentPlanRequester = new OpenAiAgentPlanner();
 const agentConfigStore = new AgentConfigStore({
   createDefaults: () => ({
     plannerApiBaseUrl: process.env.MCBOT_AI_API_BASE_URL?.trim() || "https://api.openai.com/v1",
@@ -336,20 +310,10 @@ const agentConfigStore = new AgentConfigStore({
 const plannerRequestLifecycle = new AiRequestLifecycle({
   writeStatus: (botId, status) => agentConfigStore.setLastPlannerRequest(botId, status)
 });
-const agentTaskProgressAt = new Map<string, { detail: string; at: number; taskId: string }>();
-const agentInventorySnapshots = new Map<string, string>();
-const agentExecutorLoops = new Map<string, ReturnType<typeof setInterval>>();
-const agentExecutorRuns = new Map<string, Promise<void>>();
-const agentMemoryPlayerProfiles = new Map<string, Map<string, AgentMemoryPlayerProfile>>();
-const agentMemoryPlaces = new Map<string, Map<string, AgentMemoryPlaceRecord>>();
-const agentTaskHistory = new Map<string, AgentMemoryTaskHistoryRecord[]>();
-const agentIdleSocialAt = new Map<string, number>();
-const agentLastHandledStrategicLifecycleEventId = new Map<string, string>();
-const agentLastHandledStrategicLifecycleReportEventId = new Map<string, string>();
-const territoryConfigs = new Map<string, TerritoryConfig>();
-const territoryPresence = new Map<string, TerritoryPresenceState>();
-const hierarchicalTaskTimerIds = new Map<string, string>();
-const hierarchicalLastTickAt = new Map<string, number>();
+const agentGameMemoryStateStore = new AgentGameMemoryStateStore();
+const agentTaskHistoryStore = new AgentTaskHistoryStore();
+const territoryConfigStore = new TerritoryConfigStore();
+const territoryRuntime = new TerritoryRuntime();
 const selfGuardConfigStore = new SelfGuardConfigStore();
 const selfGuardRuntimeStateStore = new SelfGuardRuntimeStateStore();
 const selfGuardTaskQueue = new InvalidatableTaskQueue({
@@ -411,10 +375,7 @@ function getQueuedPlannerSteps(botId: string): AgentPlanStep[] {
 const selfGuardLoopLifecycle = new SelfGuardLoopLifecycle(systemIntervalScheduler);
 const retaliationStateStore = new RetaliationStateStore();
 const combatExecutionStateStore = new CombatExecutionStateStore();
-const botLastInteractionAt = new Map<string, number>();
-const botLastProactiveSpeakAt = new Map<string, number>();
-const botLastMemoryChatContext = new Map<string, { player: string; relation: string; at: number }>();
-const botMood = new Map<string, string>();
+const socialRuntimeStateStore = new SocialRuntimeStateStore();
 interface SelfGuardHurtBot extends SelfGuardHurtEmitter {
   entity?: { id?: number };
 }
@@ -425,19 +386,8 @@ const selfGuardHurtSubscriptions = new SelfGuardHurtSubscriptionRegistry<
   getCurrentConfig: (botId) => selfGuardConfigStore.get(botId),
   getSelfEntityId: (bot) => bot.entity?.id
 });
-const duelLoops = new Map<string, ReturnType<typeof setInterval>>();
-const duelSessions = new Map<string, DuelSessionState>();
-const duelHandlers = new Map<
-  string,
-  {
-    entityUnsubscribe: () => void;
-    movementUnsubscribe: () => void;
-  }
->();
-const gotoPositionLoops = new Map<string, ReturnType<typeof setInterval>>();
-const gotoPositionMovementHandlers = new Map<string, { unsubscribe: () => void }>();
-const miningTasks = new Map<string, Promise<void>>();
-const pathfinderGoalCache = new Map<string, string>();
+const miningTaskQueue = new MiningTaskQueue();
+const movementIntentStore = new MovementIntentStore();
 const projectRootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const dataRootDir =
   process.env.MCBOT_DATA_DIR?.trim() ||
@@ -487,8 +437,6 @@ const DEFAULT_MINING_TARGET_BLOCKS = [
 ];
 let validChatLogQueue: Promise<void> = Promise.resolve();
 const sharedGameMemoryStore = new SharedGameMemoryStore(sharedMemoryDir);
-const sharedGameMemoryPlayers = new Map<string, AgentMemoryPlayerProfile>();
-const sharedGameMemoryPlaces = new Map<string, AgentMemoryPlaceRecord>();
 let sharedGameMemoryPersistQueue: Promise<void> = Promise.resolve();
 let sharedGameMemoryLastWriteAt: string | null = null;
 let sharedGameMemoryLastError: string | null = null;
@@ -496,9 +444,7 @@ let sharedGameMemoryLoaded = false;
 let sharedGameMemoryLastLoadAt: string | null = null;
 let sharedGameMemoryLastLoadError: string | null = null;
 let sharedGameMemoryLastImport = { playerCount: 0, placeCount: 0, affectedBotCount: 0 };
-let listenerWatchdogTimer: ReturnType<typeof setInterval> | null = null;
 let promptProfileLoadStarted = false;
-const sceneLastAt = new Map<string, number>();
 
 const defaultPromptProfile: PromptProfile = {
   systemPrompt:
@@ -736,9 +682,9 @@ const optionalFlexibleNonNegativeInt = z.preprocess(
 
 function toPersistedAgentConfig(botId: string, coreConfig: PersistedAgentConfig): PersistedAgentConfig {
   const strategicGoal = getStrategicGoal(botId);
-  const playerProfiles = agentMemoryPlayerProfiles.get(botId);
-  const places = agentMemoryPlaces.get(botId);
-  const taskHistory = agentTaskHistory.get(botId) ?? [];
+  const playerProfiles = agentGameMemoryStateStore.getExistingPlayers(botId);
+  const places = agentGameMemoryStateStore.getExistingPlaces(botId);
+  const taskHistory = agentTaskHistoryStore.get(botId);
   return {
     ...coreConfig,
     strategicGoal: strategicGoal
@@ -757,15 +703,25 @@ function toPersistedAgentConfig(botId: string, coreConfig: PersistedAgentConfig)
       : undefined,
     memory: {
       playerProfiles: playerProfiles
-        ? Object.fromEntries([...playerProfiles.entries()].map(([key, value]) => [key, { ...value }]))
+        ? Object.fromEntries(
+            playerProfiles.map((value) => [
+              value.playerName,
+              { ...value, tags: value.tags ? [...value.tags] : undefined }
+            ])
+          )
         : {},
       places: places
-        ? Object.fromEntries([...places.entries()].map(([key, value]) => [key, { ...value }]))
+        ? Object.fromEntries(
+            places.map((value) => [
+              value.placeId,
+              { ...value, tags: value.tags ? [...value.tags] : undefined }
+            ])
+          )
         : {},
       taskHistory: taskHistory.slice(-20).map((entry) => ({ ...entry }))
     },
     territory: (() => {
-      const territory = territoryConfigs.get(botId);
+      const territory = territoryConfigStore.get(botId);
       return territory
 	        ? {
 	            enabled: territory.enabled,
@@ -805,43 +761,8 @@ function queuePersistChatState(): void {
   persistedChatConfigRepository.enqueue(state);
 }
 
-function collectSharedMemoryPlayers(): AgentMemoryPlayerProfile[] {
-  const players = new Map<string, AgentMemoryPlayerProfile>();
-  for (const profiles of agentMemoryPlayerProfiles.values()) {
-    for (const profile of profiles.values()) {
-      const current = players.get(profile.playerName);
-      if (!current || profile.updatedAt >= current.updatedAt) {
-        players.set(profile.playerName, { ...profile, tags: profile.tags ? [...profile.tags] : undefined });
-      }
-    }
-  }
-  return [...players.values()];
-}
-
-function collectSharedMemoryPlaces(): AgentMemoryPlaceRecord[] {
-  const places = new Map<string, AgentMemoryPlaceRecord>();
-  for (const memoryPlaces of agentMemoryPlaces.values()) {
-    for (const place of memoryPlaces.values()) {
-      const current = places.get(place.placeId);
-      if (!current || place.updatedAt >= current.updatedAt) {
-        places.set(place.placeId, { ...place, tags: place.tags ? [...place.tags] : undefined });
-      }
-    }
-  }
-  return [...places.values()];
-}
-
 function queuePersistSharedGameMemory(): void {
-  const players = collectSharedMemoryPlayers();
-  const places = collectSharedMemoryPlaces();
-  sharedGameMemoryPlayers.clear();
-  sharedGameMemoryPlaces.clear();
-  for (const player of players) {
-    sharedGameMemoryPlayers.set(player.playerName, clonePlayerProfile(player));
-  }
-  for (const place of places) {
-    sharedGameMemoryPlaces.set(place.placeId, clonePlaceRecord(place));
-  }
+  const { players, places } = agentGameMemoryStateStore.createSharedSnapshot();
   sharedGameMemoryPersistQueue = sharedGameMemoryPersistQueue
     .then(async () => {
       await Promise.all([sharedGameMemoryStore.savePlayers(players), sharedGameMemoryStore.savePlaces(places)]);
@@ -857,68 +778,27 @@ function queuePersistSharedGameMemory(): void {
     });
 }
 
-function clonePlayerProfile(profile: AgentMemoryPlayerProfile): AgentMemoryPlayerProfile {
-  return { ...profile, tags: profile.tags ? [...profile.tags] : undefined };
-}
-
-function clonePlaceRecord(place: AgentMemoryPlaceRecord): AgentMemoryPlaceRecord {
-  return { ...place, tags: place.tags ? [...place.tags] : undefined };
-}
-
-function mergeSharedMemoryIntoBot(botId: string): { playerCount: number; placeCount: number } {
-  const players = getOrCreateMemoryPlayerProfiles(botId);
-  const places = getOrCreateMemoryPlaces(botId);
-  const playerCount = mergeNewerMemoryRecords(players, sharedGameMemoryPlayers.entries(), clonePlayerProfile);
-  const placeCount = mergeNewerMemoryRecords(places, sharedGameMemoryPlaces.entries(), clonePlaceRecord);
-  return { playerCount, placeCount };
-}
-
 async function loadSharedGameMemory(): Promise<{ playerCount: number; placeCount: number; affectedBotCount: number }> {
   try {
     const [players, places] = await Promise.all([sharedGameMemoryStore.loadPlayers(), sharedGameMemoryStore.loadPlaces()]);
-    for (const [playerName, profile] of players.entries()) {
-      const current = sharedGameMemoryPlayers.get(playerName);
-      if (!current || profile.updatedAt > current.updatedAt) {
-        sharedGameMemoryPlayers.set(playerName, clonePlayerProfile(profile));
-      }
-    }
-    for (const [placeId, place] of places.entries()) {
-      const current = sharedGameMemoryPlaces.get(placeId);
-      if (!current || place.updatedAt > current.updatedAt) {
-        sharedGameMemoryPlaces.set(placeId, clonePlaceRecord(place));
-      }
-    }
-
-    let importedPlayerCount = 0;
-    let importedPlaceCount = 0;
-    let affectedBotCount = 0;
-    const botIds = new Set([...agentMemoryPlayerProfiles.keys(), ...agentMemoryPlaces.keys(), ...agentConfigStore.getBotIds()]);
-    for (const botId of botIds) {
-      const imported = mergeSharedMemoryIntoBot(botId);
-      importedPlayerCount += imported.playerCount;
-      importedPlaceCount += imported.placeCount;
-      if (imported.playerCount > 0 || imported.placeCount > 0) {
-        affectedBotCount += 1;
-      }
-    }
+    const imported = agentGameMemoryStateStore.mergeSharedSnapshot(
+      { players: players.values(), places: places.values() },
+      agentConfigStore.getBotIds()
+    );
     sharedGameMemoryLoaded = true;
     sharedGameMemoryLastLoadAt = new Date().toISOString();
     sharedGameMemoryLastLoadError = null;
-    sharedGameMemoryLastImport = {
-      playerCount: importedPlayerCount,
-      placeCount: importedPlaceCount,
-      affectedBotCount
-    };
-    if (affectedBotCount > 0) {
+    sharedGameMemoryLastImport = imported;
+    if (imported.affectedBotCount > 0) {
       queuePersistChatState();
     }
     log("info", "Loaded shared game memory", {
       memoryDir: sharedGameMemoryStore.memoryDir,
       sharedPlayerCount: players.size,
       sharedPlaceCount: places.size,
-      importedPlayerCount,
-      importedPlaceCount,
-      affectedBotCount
+      importedPlayerCount: imported.playerCount,
+      importedPlaceCount: imported.placeCount,
+      affectedBotCount: imported.affectedBotCount
     });
     return sharedGameMemoryLastImport;
   } catch (error) {
@@ -970,8 +850,6 @@ function applyPersistedAgentComposedState(botId: string, persisted: PersistedAge
       updatedAt: typeof profile?.updatedAt === "number" ? profile.updatedAt : Date.now()
     });
   }
-  agentMemoryPlayerProfiles.set(botId, playerProfiles);
-
   const places = new Map<string, AgentMemoryPlaceRecord>();
   for (const [placeId, place] of Object.entries(persisted.memory?.places ?? {})) {
     const normalized = String(placeId).trim();
@@ -988,22 +866,32 @@ function applyPersistedAgentComposedState(botId: string, persisted: PersistedAge
       updatedAt: typeof place?.updatedAt === "number" ? place.updatedAt : Date.now()
     });
   }
-  agentMemoryPlaces.set(botId, places);
+  agentGameMemoryStateStore.replaceBot(botId, {
+    players: playerProfiles.values(),
+    places: places.values()
+  });
 
-  const territory = getOrCreateTerritoryConfig(botId);
-  territory.enabled = !!persisted.territory?.enabled;
-  territory.placeIds = Array.isArray(persisted.territory?.placeIds)
-    ? persisted.territory.placeIds.map((x) => String(x).trim()).filter(Boolean).slice(0, 16)
-    : [];
-  territory.requiredTags = Array.isArray(persisted.territory?.requiredTags)
-    ? persisted.territory.requiredTags.map((x) => String(x).trim().toLowerCase()).filter(Boolean).slice(0, 12)
-    : [];
-  territory.radius = Math.max(4, Math.min(64, persisted.territory?.radius ?? 12));
-  territory.warningCooldownMs = Math.max(1000, Math.min(300_000, persisted.territory?.warningCooldownMs ?? 30_000));
-  territory.warningMessage = String(persisted.territory?.warningMessage ?? "走开。").trim() || "走开。";
-  territory.ownerPresencePolicy = persisted.territory?.ownerPresencePolicy === "always" ? "always" : "owner_nearby_only";
-  territory.escalationEnabled = persisted.territory?.escalationEnabled ?? true;
-  territory.escalationDelayMs = Math.max(1000, Math.min(300_000, persisted.territory?.escalationDelayMs ?? 8_000));
+  territoryConfigStore.replace(botId, {
+    enabled: !!persisted.territory?.enabled,
+    placeIds: Array.isArray(persisted.territory?.placeIds)
+      ? persisted.territory.placeIds.map((x) => String(x).trim()).filter(Boolean).slice(0, 16)
+      : [],
+    requiredTags: Array.isArray(persisted.territory?.requiredTags)
+      ? persisted.territory.requiredTags.map((x) => String(x).trim().toLowerCase()).filter(Boolean).slice(0, 12)
+      : [],
+    radius: Math.max(4, Math.min(64, persisted.territory?.radius ?? 12)),
+    warningCooldownMs: Math.max(
+      1000,
+      Math.min(300_000, persisted.territory?.warningCooldownMs ?? 30_000)
+    ),
+    warningMessage: String(persisted.territory?.warningMessage ?? "走开。").trim() || "走开。",
+    ownerPresencePolicy: persisted.territory?.ownerPresencePolicy === "always" ? "always" : "owner_nearby_only",
+    escalationEnabled: persisted.territory?.escalationEnabled ?? true,
+    escalationDelayMs: Math.max(
+      1000,
+      Math.min(300_000, persisted.territory?.escalationDelayMs ?? 8_000)
+    )
+  });
 
   const taskHistory = Array.isArray(persisted.memory?.taskHistory)
     ? persisted.memory.taskHistory
@@ -1025,9 +913,8 @@ function applyPersistedAgentComposedState(botId: string, persisted: PersistedAge
           finishedAt: typeof entry?.finishedAt === "number" ? entry.finishedAt : Date.now()
         }))
         .filter((entry) => entry.id && entry.taskType)
-        .slice(-20)
     : [];
-  agentTaskHistory.set(botId, taskHistory);
+  agentTaskHistoryStore.replace(botId, taskHistory);
 }
 
 interface PersistedConfigCounts {
@@ -1062,8 +949,8 @@ function replacePersistedSelfGuardConfig(
 }
 
 function replacePersistedAgentConfig(botId: string, persisted: PersistedAgentConfig): void {
-  territoryConfigs.delete(botId);
-  territoryPresence.delete(botId);
+  territoryConfigStore.delete(botId);
+  territoryRuntime.clearBot(botId);
   const replaced = agentConfigStore.replace(botId, persisted);
   if (replaced.ignoredPersistedPlannerApiKey) {
     log("warn", "Ignored persisted agent planner API key; use MCBOT_AI_API_KEY or agent.configure for this runtime", {
@@ -1080,18 +967,15 @@ function clearRemovedAgentConfig(botId: string): void {
   clearHierarchicalTaskTimer(botId);
   setStrategicGoal(botId, null);
   agentConfigStore.delete(botId);
-  agentTaskProgressAt.delete(botId);
-  agentInventorySnapshots.delete(botId);
-  agentExecutorRuns.delete(botId);
-  agentMemoryPlayerProfiles.delete(botId);
-  agentMemoryPlaces.delete(botId);
-  agentTaskHistory.delete(botId);
-  agentIdleSocialAt.delete(botId);
-  agentLastHandledStrategicLifecycleEventId.delete(botId);
-  agentLastHandledStrategicLifecycleReportEventId.delete(botId);
-  territoryConfigs.delete(botId);
-  territoryPresence.delete(botId);
-  hierarchicalLastTickAt.delete(botId);
+  hierarchicalAgents.clearTaskProgress(botId);
+  hierarchicalAgents.clearStrategicLifecycle(botId);
+  hierarchicalAgents.clearInventorySummary(botId);
+  hierarchicalAgents.clearIdleSocialAttempt(botId);
+  agentExecutorLifecycle.forgetRun(botId);
+  agentGameMemoryStateStore.deleteBot(botId);
+  agentTaskHistoryStore.delete(botId);
+  territoryConfigStore.delete(botId);
+  territoryRuntime.clearBot(botId);
 }
 
 function clearRemovedSelfGuardConfig(botId: string): void {
@@ -1253,45 +1137,35 @@ function runShutdownCleanup(label: string, cleanup: () => void): void {
 }
 
 export function stopActionRuntime(): void {
-  if (listenerWatchdogTimer) {
-    clearInterval(listenerWatchdogTimer);
-    listenerWatchdogTimer = null;
-  }
+  chatListenerLifecycle.stopWatchdog();
   runShutdownCleanup("self-guard loop lifecycle", () => selfGuardLoopLifecycle.stopAll());
 
-  for (const timer of walkTimers.values()) clearTimeout(timer);
-  for (const loop of followLoops.values()) clearInterval(loop);
-  for (const loop of agentExecutorLoops.values()) clearInterval(loop);
-  for (const loop of duelLoops.values()) clearInterval(loop);
-  for (const loop of gotoPositionLoops.values()) clearInterval(loop);
-  walkTimers.clear();
-  followLoops.clear();
-  agentExecutorLoops.clear();
-  duelLoops.clear();
-  gotoPositionLoops.clear();
+  walkTimerLifecycle.stopAll();
+  followSessionLifecycle.stopIntervalsForShutdown();
+  agentExecutorLifecycle.stopLoopsForShutdown();
+  duelSessionLifecycle.stopIntervalsForShutdown();
+  positionMovementLifecycle.stopIntervalsForShutdown();
 
-  for (const [botId, handler] of followMovementHandlers.entries()) {
-    runShutdownCleanup(`follow movement subscription (${botId})`, handler.unsubscribe);
-  }
-  for (const [botId, handler] of duelHandlers.entries()) {
-    runShutdownCleanup(`duel entity subscription (${botId})`, handler.entityUnsubscribe);
-    runShutdownCleanup(`duel movement subscription (${botId})`, handler.movementUnsubscribe);
-  }
-  for (const [botId, handler] of gotoPositionMovementHandlers.entries()) {
-    runShutdownCleanup(`position movement subscription (${botId})`, handler.unsubscribe);
-  }
-  for (const botId of [...chatHandlers.keys()]) {
-    runShutdownCleanup(`chat subscription (${botId})`, () => detachChatListener(botId));
-  }
+  followSessionLifecycle.stopMovementSubscriptionsForShutdown((botId, unsubscribe) => {
+    runShutdownCleanup(`follow movement subscription (${botId})`, unsubscribe);
+  });
+  duelSessionLifecycle.stopSubscriptionsForShutdown((botId, kind, unsubscribe) => {
+    runShutdownCleanup(`duel ${kind} subscription (${botId})`, unsubscribe);
+  });
+  positionMovementLifecycle.stopMovementSubscriptionsForShutdown((botId, unsubscribe) => {
+    runShutdownCleanup(`position movement subscription (${botId})`, unsubscribe);
+  });
+  chatListenerLifecycle.stopSubscriptionsForShutdown((botId, stop) => {
+    runShutdownCleanup(`chat subscription (${botId})`, () => {
+      chatEventDeduplicator.clearBot(botId);
+      stop();
+    });
+  });
   for (const botId of selfGuardHurtSubscriptions.keys()) {
     runShutdownCleanup(`self-guard hurt subscription (${botId})`, () => {
       selfGuardHurtSubscriptions.delete(botId);
     });
   }
-  followMovementHandlers.clear();
-  duelHandlers.clear();
-  gotoPositionMovementHandlers.clear();
-
   chatAiTaskQueue.close();
   selfGuardTaskQueue.close();
   chatAiRequestLifecycle.invalidateAll();
@@ -1353,7 +1227,11 @@ function shouldRecordPlayerChatToSharedMemory(botId: string, username: string): 
 function recordPlayerChatToSharedMemory(botId: string, username: string, message: string): void {
   if (!shouldRecordPlayerChatToSharedMemory(botId, username)) return;
   const relation = getMemoryRelationForPlayer(botId, username);
-  botLastMemoryChatContext.set(botId, { player: username, relation, at: Date.now() });
+  socialRuntimeStateStore.recordMemoryChatContext(botId, {
+    player: username,
+    relation,
+    at: Date.now()
+  });
   recordSharedChatMemory({
     timestamp: new Date().toISOString(),
     botId,
@@ -1365,7 +1243,7 @@ function recordPlayerChatToSharedMemory(botId: string, username: string, message
 }
 
 function recordBotReplyToSharedMemory(botId: string, message: string): void {
-  const context = botLastMemoryChatContext.get(botId);
+  const context = socialRuntimeStateStore.getMemoryChatContext(botId);
   if (!context) return;
   if (Date.now() - context.at > 30_000) return;
   recordSharedChatMemory({
@@ -1385,18 +1263,15 @@ function maybeSceneLine(
   fallback: string,
   options?: { cooldownMs?: number; proactive?: boolean }
 ): void {
-  const key = `${botId}:${scene}`;
   const now = Date.now();
-  const lastAt = sceneLastAt.get(key) ?? 0;
   const cooldownMs = options?.cooldownMs ?? activePromptProfile.sceneCooldownMs;
-  if (now - lastAt < cooldownMs) return;
+  if (!socialRuntimeStateStore.claimSceneLine(botId, scene, now, cooldownMs)) return;
 
-  sceneLastAt.set(key, now);
   const line = randomOf(activePromptProfile.sceneLines[scene], fallback);
   try {
     sendRuntimeChatNoWait(botId, registry, line);
     if (options?.proactive !== false) {
-      botLastProactiveSpeakAt.set(botId, now);
+      socialRuntimeStateStore.recordProactiveSpeak(botId, now);
     }
   } catch {
     // ignore disconnected bot
@@ -1411,11 +1286,11 @@ function getCurrentActivity(botId: string): string {
     if (task.type === "mine_collect_visible" || task.type === "mine_dig_visible") return "可见挖矿";
     if (task.type === "move_to_position" || task.type === "pathfind_move") return "路径移动";
   }
-  const follow = followSessions.get(botId);
+  const follow = followSessionLifecycle.get(botId);
   if (follow) return `跟随玩家(${follow.options.playerName})`;
-  const duel = duelSessions.get(botId);
+  const duel = duelSessionLifecycle.get(botId);
   if (duel) return `对决(${duel.targetName})`;
-  const goal = pathfinderGoalCache.get(botId);
+  const goal = movementIntentStore.get(botId);
   if (goal) return "路径移动";
   return "待命";
 }
@@ -1432,17 +1307,11 @@ function canAgentInterruptActiveTask(task: AgentTaskRuntime | null | undefined, 
 function isBotBusy(botId: string): boolean {
   return (
     getActiveAgentTask(botId) !== null ||
-    followSessions.has(botId) ||
-    duelSessions.has(botId) ||
-    gotoPositionLoops.has(botId) ||
-    pathfinderGoalCache.has(botId)
+    followSessionLifecycle.has(botId) ||
+    duelSessionLifecycle.has(botId) ||
+    positionMovementLifecycle.has(botId) ||
+    movementIntentStore.has(botId)
   );
-}
-
-function queueAgentExecutorRun(botId: string, task: () => Promise<void>): void {
-  const prev = agentExecutorRuns.get(botId) ?? Promise.resolve();
-  const next = prev.catch(() => {}).then(task).catch(() => {});
-  agentExecutorRuns.set(botId, next);
 }
 
 function enqueueAgentPlanSteps(botId: string, steps: AgentPlanStep[]): void {
@@ -1725,39 +1594,21 @@ function scheduleHierarchicalTaskTimer(botId: string, taskType: string): void {
   const timeoutMs = getHierarchicalTaskTimeoutMs(taskType);
   if (!timeoutMs) return;
   const runtime = hierarchicalAgents.ensure(botId);
-  const previousTimerId = hierarchicalTaskTimerIds.get(botId);
-  if (previousTimerId) {
-    runtime.blackboard.removeTimer(previousTimerId);
-  }
-  const timerId = `task_timeout_${botId}`;
-  runtime.scheduleTimer({
-    id: timerId,
-    type: "timeout",
-    label: taskType,
-    dueAt: Date.now() + timeoutMs,
-    payload: {
-      taskType
-    }
-  });
-  hierarchicalTaskTimerIds.set(botId, timerId);
+  runtime.scheduleTaskTimeout(taskType, timeoutMs);
 }
 
 function clearHierarchicalTaskTimer(botId: string): void {
-  const timerId = hierarchicalTaskTimerIds.get(botId);
-  if (!timerId) return;
   try {
-    hierarchicalAgents.ensure(botId).blackboard.removeTimer(timerId);
+    hierarchicalAgents.get(botId).clearTaskTimeout();
   } catch {
-    // ignore if runtime does not exist yet
+    // ignore if the runtime or timer does not exist yet
   }
-  hierarchicalTaskTimerIds.delete(botId);
 }
 
 function publishHierarchicalTick(botId: string, registry: BotRegistry, minIntervalMs = 5000): void {
   const now = Date.now();
-  const last = hierarchicalLastTickAt.get(botId) ?? 0;
-  if (now - last < minIntervalMs) return;
-  hierarchicalLastTickAt.set(botId, now);
+  const runtime = hierarchicalAgents.ensure(botId);
+  if (!runtime.shouldPublishTick(now, minIntervalMs)) return;
   publishHierarchicalEvent(botId, registry, "tick", "low", {
     source: "executor",
     runtimeState: getAgentRuntimeState(botId)
@@ -1804,11 +1655,11 @@ function buildDynamicStateForAi(
       .sort((a, b) => (a.distance ?? Number.POSITIVE_INFINITY) - (b.distance ?? Number.POSITIVE_INFINITY))[0];
     const inventory = runtime.getInventoryState();
     const blockObservation = runtime.getBlockObservation(6);
-    const lastProactive = botLastProactiveSpeakAt.get(botId);
+    const lastProactive = socialRuntimeStateStore.getLastProactiveSpeakAt(botId);
     const minutesSinceProactive = lastProactive
       ? Math.max(0, Math.floor((Date.now() - lastProactive) / 60000))
       : null;
-    const mood = botMood.get(botId) || "平静";
+    const mood = socialRuntimeStateStore.getMood(botId) || "平静";
     let focusTarget = blockObservation.inSight?.name ?? null;
     try {
       const focus = buildFocusPerception(runtime.getActiveBotOrThrow(), 6);
@@ -1841,7 +1692,7 @@ function buildDynamicStateForAi(
       "你目前正在：待命",
       "玩家距离你：未知",
       "上一次你主动说话：未知",
-      `你的心情：${botMood.get(botId) || "平静"}`
+      `你的心情：${socialRuntimeStateStore.getMood(botId) || "平静"}`
     ].join("\n");
   }
 }
@@ -1927,8 +1778,8 @@ function buildAgentStateSummary(botId: string, registry: BotRegistry): string {
       `food=${foodText}`,
       `held=${inventory.heldItem?.name ?? "empty"}`,
       `bestFood=${foodItem?.name ?? "none"}`,
-      `followActive=${followSessions.has(botId)}`,
-      `duelActive=${duelSessions.has(botId)}`,
+      `followActive=${followSessionLifecycle.has(botId)}`,
+      `duelActive=${duelSessionLifecycle.has(botId)}`,
       `players=[${nearbyPlayers.join(", ")}]`,
       `entities=[${hostileEntities.join(", ")}]`
     ].join("\n");
@@ -1944,7 +1795,7 @@ function recordAgentEvent(
   payload: Record<string, unknown>
 ): void {
   const runtime = getAgentHierarchicalRuntime(botId);
-  const list = runtime.snapshot().executionEvents;
+  const list = runtime.rawExecutionEvents();
   const shouldKeep =
     priority !== "low" ||
     list.filter((evt) => evt.priority === "low").length < 6;
@@ -1968,8 +1819,7 @@ function getStrategicLifecycleEvents(botId: string): AgentExecutionEvent[] {
     "goal_abandoned"
   ]);
   return getAgentHierarchicalRuntime(botId)
-    .snapshot()
-    .executionEvents.filter((event) => lifecycleTypes.has(event.type));
+    .rawExecutionEvents().filter((event) => lifecycleTypes.has(event.type));
 }
 
 function summarizeRecentStrategicLifecycle(botId: string): string {
@@ -2002,7 +1852,7 @@ function buildAgentExecutionTrace(botId: string): Record<string, unknown> {
     botId,
     mode: cfg.mode,
     runtimeState: getAgentRuntimeState(botId),
-    executorAttached: agentExecutorLoops.has(botId),
+    executorAttached: agentExecutorLifecycle.isAttached(botId),
     activeTask: runtimeTask,
     queuedLegacySteps: getQueuedPlannerSteps(botId).map((step) => ({
       tool: step.tool,
@@ -2108,8 +1958,7 @@ function summarizePreferredRememberedPlaces(stateSnapshot: AgentStateSnapshot): 
 function getPendingStrategicLifecycleInstruction(botId: string, config: AgentConfig, stateSnapshot: AgentStateSnapshot): string | null {
   const latest = getStrategicLifecycleEvents(botId).slice(-1)[0];
   if (!latest) return null;
-  if (agentLastHandledStrategicLifecycleEventId.get(botId) === latest.id) return null;
-  agentLastHandledStrategicLifecycleEventId.set(botId, latest.id);
+  if (!getAgentHierarchicalRuntime(botId).claimStrategicLifecycleInstruction(latest.id)) return null;
 
   const strategicGoalState = stateSnapshot.memorySummary.strategicGoal;
   const strategicGoal = String(strategicGoalState?.goal ?? "").trim();
@@ -2141,7 +1990,8 @@ async function maybeHandleStrategicLifecycleReport(botId: string, registry: BotR
   const latest = getStrategicLifecycleEvents(botId).slice(-1)[0];
   if (!latest) return false;
   if (latest.type !== "goal_completed" && latest.type !== "goal_abandoned") return false;
-  if (agentLastHandledStrategicLifecycleReportEventId.get(botId) === latest.id) return false;
+  const runtime = getAgentHierarchicalRuntime(botId);
+  if (!runtime.canPublishStrategicLifecycleReport(latest.id)) return false;
 
   try {
     const snapshot = buildAgentStateSnapshot(botId, registry);
@@ -2151,7 +2001,7 @@ async function maybeHandleStrategicLifecycleReport(botId: string, registry: BotR
     const displayName = String(reportTarget.displayName ?? reportTarget.playerName).trim() || reportTarget.playerName;
     const text = latest.type === "goal_completed" ? `${displayName}，搞定了。` : `${displayName}，这个先不做了。`;
     await sendRuntimeChat(botId, registry, text);
-    agentLastHandledStrategicLifecycleReportEventId.set(botId, latest.id);
+    runtime.markStrategicLifecycleReportPublished(latest.id);
     recordAgentEvent(botId, "task_progress", "normal", {
       taskType: "speak",
       detail: `strategic_lifecycle_report sent for ${latest.type}`,
@@ -2166,13 +2016,7 @@ async function maybeHandleStrategicLifecycleReport(botId: string, registry: BotR
 
 function maybeRecordInventoryChanged(botId: string, inventory: InventorySnapshot): void {
   const next = summarizeInventorySnapshotForEvent(inventory);
-  const prev = agentInventorySnapshots.get(botId);
-  if (prev === undefined) {
-    agentInventorySnapshots.set(botId, next.summary);
-    return;
-  }
-  if (prev === next.summary) return;
-  agentInventorySnapshots.set(botId, next.summary);
+  if (!getAgentHierarchicalRuntime(botId).observeInventorySummary(next.summary)) return;
   recordAgentEvent(botId, "inventory_changed", "normal", {
     summary: next.summary,
     itemCount: next.itemCount
@@ -2180,31 +2024,15 @@ function maybeRecordInventoryChanged(botId: string, inventory: InventorySnapshot
 }
 
 function getOrCreateMemoryPlayerProfiles(botId: string): Map<string, AgentMemoryPlayerProfile> {
-  const existing = agentMemoryPlayerProfiles.get(botId);
-  if (existing) return existing;
-  const created = new Map<string, AgentMemoryPlayerProfile>(
-    [...sharedGameMemoryPlayers.entries()].map(([playerName, profile]) => [playerName, clonePlayerProfile(profile)])
-  );
-  agentMemoryPlayerProfiles.set(botId, created);
-  return created;
+  return agentGameMemoryStateStore.getPlayerMapSnapshot(botId);
 }
 
 function getOrCreateMemoryPlaces(botId: string): Map<string, AgentMemoryPlaceRecord> {
-  const existing = agentMemoryPlaces.get(botId);
-  if (existing) return existing;
-  const created = new Map<string, AgentMemoryPlaceRecord>(
-    [...sharedGameMemoryPlaces.entries()].map(([placeId, place]) => [placeId, clonePlaceRecord(place)])
-  );
-  agentMemoryPlaces.set(botId, created);
-  return created;
+  return agentGameMemoryStateStore.getPlaceMapSnapshot(botId);
 }
 
-function getTaskHistory(botId: string): AgentMemoryTaskHistoryRecord[] {
-  const existing = agentTaskHistory.get(botId);
-  if (existing) return existing;
-  const created: AgentMemoryTaskHistoryRecord[] = [];
-  agentTaskHistory.set(botId, created);
-  return created;
+function getTaskHistory(botId: string): AgentTaskHistoryRecord[] {
+  return agentTaskHistoryStore.get(botId);
 }
 
 function rememberPlayerProfile(
@@ -2212,9 +2040,8 @@ function rememberPlayerProfile(
   playerName: string,
   patch: Partial<Omit<AgentMemoryPlayerProfile, "playerName" | "updatedAt">>
 ): AgentMemoryPlayerProfile {
-  const profiles = getOrCreateMemoryPlayerProfiles(botId);
   const normalized = String(playerName ?? "").trim();
-  const existing = profiles.get(normalized);
+  const existing = agentGameMemoryStateStore.getPlayer(botId, normalized);
   const next: AgentMemoryPlayerProfile = {
     playerName: normalized,
     alias: patch.alias?.trim() || existing?.alias,
@@ -2224,7 +2051,7 @@ function rememberPlayerProfile(
     lastSeenAt: patch.lastSeenAt ?? existing?.lastSeenAt,
     updatedAt: Date.now()
   };
-  profiles.set(normalized, next);
+  agentGameMemoryStateStore.setPlayer(botId, next);
   queuePersistChatState();
   queuePersistSharedGameMemory();
   return next;
@@ -2235,7 +2062,6 @@ function rememberPlace(
   placeId: string,
   input: Omit<AgentMemoryPlaceRecord, "updatedAt">
 ): AgentMemoryPlaceRecord {
-  const places = getOrCreateMemoryPlaces(botId);
   const normalizedId = String(placeId ?? "").trim();
   const next: AgentMemoryPlaceRecord = {
     ...input,
@@ -2243,7 +2069,7 @@ function rememberPlace(
     label: String(input.label ?? normalizedId).trim() || normalizedId,
     updatedAt: Date.now()
   };
-  places.set(normalizedId, next);
+  agentGameMemoryStateStore.setPlace(botId, next);
   queuePersistChatState();
   queuePersistSharedGameMemory();
   return next;
@@ -2881,81 +2707,58 @@ async function maybeHandleTerritoryWarning(botId: string, registry: BotRegistry)
   const whitelist = getUnifiedWhitelist(botId);
   const owner = getOrCreateAgentConfig(botId).owner.trim();
   const now = Date.now();
-  const presence = evaluateTerritoryPresence({
+  const result = territoryRuntime.tick({
+    botId,
+    now,
     players: runtime.getNearbyPlayers(Number.MAX_SAFE_INTEGER),
     places,
     radius: territory.radius,
     ownerUsername: owner,
     whitelist,
     selfUsername: selfState.username,
-    ownerPresencePolicy: territory.ownerPresencePolicy
-  });
-  const nearbyIntruder = presence.nearestIntruder;
-  const activeKeys = new Set(
-    presence.activePresenceKeys.map((key) => `${botId}:${key}`)
-  );
-  for (const key of [...territoryPresence.keys()]) {
-    if (key.startsWith(`${botId}:`) && !activeKeys.has(key)) {
-      territoryPresence.delete(key);
-    }
-  }
-
-  if (!nearbyIntruder) return false;
-
-  const warningKey = `${botId}:${nearbyIntruder.place.placeId}:${nearbyIntruder.username}`;
-  const existing = territoryPresence.get(warningKey);
-  if (!existing || now - existing.warnedAt >= territory.warningCooldownMs) {
-    territoryPresence.set(warningKey, {
-      enteredAt: existing?.enteredAt ?? now,
-      warnedAt: now
-    });
-    sendRuntimeChatNoWait(botId, registry, territory.warningMessage);
-    recordAgentEvent(botId, "task_progress", "normal", {
-      taskType: "territory_warning",
-      detail: `warned ${nearbyIntruder.username} near territory '${nearbyIntruder.place.label}'`,
-      playerName: nearbyIntruder.username,
-      placeId: nearbyIntruder.place.placeId
-    });
-    return true;
-  }
-
-  if (
-    territory.escalationEnabled &&
-    !existing.escalatedAt &&
-    now - existing.enteredAt >= territory.escalationDelayMs
-  ) {
-    if (!presence.ownerNearby) {
+    ownerPresencePolicy: territory.ownerPresencePolicy,
+    warningCooldownMs: territory.warningCooldownMs,
+    escalationEnabled: territory.escalationEnabled,
+    escalationDelayMs: territory.escalationDelayMs
+  }, {
+    onWarning: ({ intruder }) => {
+      sendRuntimeChatNoWait(botId, registry, territory.warningMessage);
       recordAgentEvent(botId, "task_progress", "normal", {
         taskType: "territory_warning",
-        detail: `holding escalation for ${nearbyIntruder.username}; owner not nearby`,
-        playerName: nearbyIntruder.username,
-        placeId: nearbyIntruder.place.placeId
+        detail: `warned ${intruder.username} near territory '${intruder.place.label}'`,
+        playerName: intruder.username,
+        placeId: intruder.place.placeId
       });
-      return false;
+    },
+    onEscalationHeld: ({ intruder }) => {
+      recordAgentEvent(botId, "task_progress", "normal", {
+        taskType: "territory_warning",
+        detail: `holding escalation for ${intruder.username}; owner not nearby`,
+        playerName: intruder.username,
+        placeId: intruder.place.placeId
+      });
+    },
+    onEscalation: ({ intruder }) => {
+      recordAgentEvent(botId, "task_progress", "high", {
+        taskType: "territory_warning",
+        detail: `escalating against ${intruder.username} near territory '${intruder.place.label}'`,
+        playerName: intruder.username,
+        placeId: intruder.place.placeId
+      });
+      startDuel(botId, registry, "territory_guard", {
+        entityId: intruder.entityId,
+        name: "player",
+        displayName: intruder.username,
+        type: "player"
+      });
     }
-    existing.escalatedAt = now;
-    territoryPresence.set(warningKey, existing);
-    recordAgentEvent(botId, "task_progress", "high", {
-      taskType: "territory_warning",
-      detail: `escalating against ${nearbyIntruder.username} near territory '${nearbyIntruder.place.label}'`,
-      playerName: nearbyIntruder.username,
-      placeId: nearbyIntruder.place.placeId
-    });
-    startDuel(botId, registry, "territory_guard", {
-      entityId: nearbyIntruder.entityId,
-      name: "player",
-      displayName: nearbyIntruder.username,
-      type: "player"
-    });
-    return true;
-  }
+  });
 
-  return false;
+  return result.handled;
 }
 
 function recordTaskHistory(botId: string, task: AgentTaskRuntime): void {
-  const history = getTaskHistory(botId);
-  history.push({
+  agentTaskHistoryStore.record(botId, {
     id: task.taskId,
     taskType: task.type,
     status: task.status,
@@ -2966,10 +2769,6 @@ function recordTaskHistory(botId: string, task: AgentTaskRuntime): void {
     createdAt: task.createdAt,
     finishedAt: Date.now()
   });
-  if (history.length > 20) {
-    history.splice(0, history.length - 20);
-  }
-  agentTaskHistory.set(botId, history);
   queuePersistChatState();
 }
 
@@ -3177,7 +2976,7 @@ async function runMineVisibleNearPlayer(
         if (pathApi && typeof pathApi.setGoal === "function") {
           pathApi.setGoal(null);
         }
-        pathfinderGoalCache.delete(botId);
+        movementIntentStore.delete(botId);
         if (!arrived) {
           stopReason = "approach_timeout";
           break;
@@ -3208,7 +3007,7 @@ async function runMineVisibleNearPlayer(
       if (pathApi && typeof pathApi.setGoal === "function") {
         pathApi.setGoal(null);
       }
-      pathfinderGoalCache.delete(botId);
+      movementIntentStore.delete(botId);
     }
   }
 
@@ -3611,15 +3410,15 @@ function updateAgentTask(botId: string, patch: Partial<Pick<AgentTaskRuntime, "d
   };
   setActiveAgentTask(botId, next);
   if (typeof patch.detail === "string" && patch.detail.trim()) {
-    const last = agentTaskProgressAt.get(botId);
     const now = Date.now();
-    if (!last || last.taskId !== existing.taskId || last.detail !== patch.detail || now - last.at >= 1200) {
+    const runtime = getAgentHierarchicalRuntime(botId);
+    if (runtime.canPublishTaskProgress(next.taskId, patch.detail, now, 1_200)) {
       recordAgentEvent(botId, "task_progress", "normal", {
         taskId: next.taskId,
         taskType: next.type,
         detail: patch.detail
       });
-      agentTaskProgressAt.set(botId, { taskId: next.taskId, detail: patch.detail, at: now });
+      runtime.markTaskProgressPublished(next.taskId, patch.detail, now);
     }
   }
 }
@@ -3662,7 +3461,7 @@ function finalizeAgentTask(
   recordTaskHistory(botId, finalTask);
   clearHierarchicalTaskTimer(botId);
   setActiveAgentTask(botId, null);
-  agentTaskProgressAt.delete(botId);
+  getAgentHierarchicalRuntime(botId).clearTaskProgress();
 }
 
 function classifyAgentChatEvent(
@@ -3706,7 +3505,7 @@ function getAgentTaskContext(botId: string): Record<string, unknown> {
     };
   }
 
-  const follow = followSessions.get(botId);
+  const follow = followSessionLifecycle.get(botId);
   if (follow) {
     return {
       activeTask: {
@@ -3730,7 +3529,7 @@ function getAgentTaskContext(botId: string): Record<string, unknown> {
     };
   }
 
-  const duel = duelSessions.get(botId);
+  const duel = duelSessionLifecycle.get(botId);
   if (duel) {
     return {
       activeTask: {
@@ -3758,7 +3557,7 @@ function getAgentTaskContext(botId: string): Record<string, unknown> {
     };
   }
 
-  const pathGoal = pathfinderGoalCache.get(botId);
+  const pathGoal = movementIntentStore.get(botId);
   if (pathGoal) {
     return {
       activeTask: {
@@ -3944,7 +3743,7 @@ function buildAgentStateSnapshot(botId: string, registry: BotRegistry) {
     runtimeState:
       selfGuard.enabled && typeof health === "number" && health <= selfGuard.criticalHealth
         ? "guarded"
-        : !!getActiveAgentTask(botId) || pathfinderGoalCache.has(botId) || followSessions.has(botId) || duelSessions.has(botId)
+        : !!getActiveAgentTask(botId) || movementIntentStore.has(botId) || followSessionLifecycle.has(botId) || duelSessionLifecycle.has(botId)
           ? "task_running"
           : getAgentRuntimeState(botId),
     selfState: {
@@ -3965,8 +3764,8 @@ function buildAgentStateSnapshot(botId: string, registry: BotRegistry) {
           z: velocity?.z ?? null
         },
         isMoving: Math.abs(velocity?.x ?? 0) > 0.01 || Math.abs(velocity?.z ?? 0) > 0.01,
-        isFollowing: followSessions.has(botId),
-        isPathfinding: Boolean(bot.pathfinder?.goal) || pathfinderGoalCache.has(botId)
+        isFollowing: followSessionLifecycle.has(botId),
+        isPathfinding: Boolean(bot.pathfinder?.goal) || movementIntentStore.has(botId)
       },
       vitals: {
         health: health ?? null,
@@ -4007,7 +3806,7 @@ function buildAgentStateSnapshot(botId: string, registry: BotRegistry) {
       effects: Object.keys(bot.entity.effects ?? {}),
       currentActivity: {
         type: getCurrentActivity(botId),
-        detail: pathfinderGoalCache.get(botId) || cfg.lastPlanResult || ""
+        detail: movementIntentStore.get(botId) || cfg.lastPlanResult || ""
       }
     },
     localWorld: {
@@ -4034,7 +3833,7 @@ function buildAgentStateSnapshot(botId: string, registry: BotRegistry) {
       .sort((a, b) => (a.distance ?? Number.POSITIVE_INFINITY) - (b.distance ?? Number.POSITIVE_INFINITY))
       .slice(0, 16)
       .map(({ dedupeKey: _dedupeKey, ...entity }) => entity),
-    events: [...getAgentHierarchicalRuntime(botId).snapshot().executionEvents],
+    events: getAgentHierarchicalRuntime(botId).rawExecutionEvents(),
     taskContext: getAgentTaskContext(botId),
     memorySummary: {
       owner: cfg.owner || null,
@@ -4054,7 +3853,10 @@ function buildAgentStateSnapshot(botId: string, registry: BotRegistry) {
 type AgentStateSnapshot = ReturnType<typeof buildAgentStateSnapshot>;
 
 export function getAgentStateSnapshotForDebug(botId: string, registry: BotRegistry): Record<string, unknown> {
-  return buildAgentStateSnapshot(botId, registry);
+  return {
+    ...buildAgentStateSnapshot(botId, registry),
+    events: getAgentHierarchicalRuntime(botId).snapshot().executionEvents
+  };
 }
 
 export function getAgentStatusForDebug(botId: string): Record<string, unknown> {
@@ -4076,7 +3878,7 @@ export function getAgentStatusForDebug(botId: string): Record<string, unknown> {
     maxToolCallsPerTurn: cfg.maxToolCallsPerTurn,
     allowProactiveAction: cfg.allowProactiveAction,
     allowedTools: cfg.allowedTools,
-    executorAttached: agentExecutorLoops.has(botId),
+    executorAttached: agentExecutorLifecycle.isAttached(botId),
     queuedStepCount: getQueuedPlannerSteps(botId).length,
     strategicGoal: getStrategicGoal(botId),
     currentMilestone: getCurrentStrategicMilestone(botId),
@@ -4149,7 +3951,7 @@ export function getChatListenerStatusForDebug(botId: string): Record<string, unk
     specialReplies: cfg.specialReplies,
     validMessageLogPath: validChatLogPath,
     persistedConfigPath: persistedChatConfigPath,
-    attached: chatHandlers.has(botId)
+    attached: chatListenerLifecycle.has(botId)
   };
 }
 
@@ -4171,7 +3973,7 @@ export function getChatAiStatusForDebug(botId: string): Record<string, unknown> 
     modelFallbacks: cfg.modelFallbacks,
     validMessageLogPath: validChatLogPath,
     persistedConfigPath: persistedChatConfigPath,
-    attached: chatHandlers.has(botId)
+    attached: chatListenerLifecycle.has(botId)
   };
 }
 
@@ -4360,7 +4162,9 @@ export async function debugStopFollow(
   botId: string,
   registry: BotRegistry
 ): Promise<Record<string, unknown>> {
-  return { ...(await invokeStopFollowCommand(botId, registry, "web")) };
+  return {
+    ...(await getActionCommandSet(registry).invokeStopFollow({ botId, source: "web" }))
+  };
 }
 
 export function debugEnableHiReply(
@@ -4442,13 +4246,24 @@ export async function debugEatFood(
     itemName?: string;
   }
 ): Promise<Record<string, unknown>> {
-  const result = await registry.get(botId).eatFood({
-    itemName: input?.itemName?.trim() || undefined
-  });
   return {
-    botId,
-    action: "eatFood",
-    result
+    ...(await getActionCommandSet(registry).invokeEat(
+      { botId, source: "web" },
+      { itemName: input?.itemName?.trim() || undefined }
+    ))
+  };
+}
+
+export async function debugHoldItemByCategory(
+  botId: string,
+  registry: BotRegistry,
+  input: HoldItemByCategoryInput
+): Promise<Record<string, unknown>> {
+  return {
+    ...(await getActionCommandSet(registry).invokeHoldByCategory(
+      { botId, source: "web" },
+      input
+    ))
   };
 }
 
@@ -4478,19 +4293,16 @@ export async function debugUseHeldItem(
 export async function debugOpenDoor(
   botId: string,
   registry: BotRegistry,
-  input?: {
-    reach?: number;
-    radius?: number;
-  }
+  input?: OpenDoorInput
 ): Promise<Record<string, unknown>> {
-  const result = await registry.get(botId).openDoor({
-    reach: input?.reach,
-    radius: input?.radius
-  });
   return {
-    botId,
-    action: "openDoor",
-    result
+    ...(await getActionCommandSet(registry).invokeOpenDoor(
+      { botId, source: "web" },
+      {
+        reach: input?.reach,
+        radius: input?.radius
+      }
+    ))
   };
 }
 
@@ -4610,242 +4422,6 @@ export function debugCapturePlaceHere(
   };
 }
 
-type AgentPlan = {
-  intent: "execute_skill" | "no_action";
-  speak?: string;
-  tool?: string;
-  arguments?: Record<string, unknown>;
-  steps?: AgentPlanStep[];
-  directive?: {
-    goal?: string;
-    rationale?: string;
-    desiredMode?: "manual" | "assist" | "auto";
-    milestones?: string[];
-    currentMilestoneIndex?: number;
-    actions?: Array<{
-      kind?: string;
-      params?: Record<string, unknown>;
-      style?: string;
-      priority?: "low" | "normal" | "high" | "critical";
-    }>;
-  };
-};
-
-const ALLOWED_STRATEGIC_ACTION_KINDS: StrategicAction["kind"][] = [
-  "follow_player",
-  "attack_target",
-  "challenge_entity",
-  "stop_follow",
-  "eat_food",
-  "prepare_battle",
-  "request_teleport_to_player",
-  "move_to_position",
-  "organize_inventory",
-  "equip_category",
-  "drop_item",
-  "open_door",
-  "wander_area",
-  "socialize",
-  "mine_visible",
-  "observe_target",
-  "speak",
-  "idle"
-];
-
-function normalizeAgentPlan(plan: AgentPlan, maxSteps: number): AgentPlanStep[] {
-  const fromSteps = Array.isArray(plan.steps)
-    ? plan.steps
-        .filter((step) => step && typeof step.tool === "string" && step.tool.trim().length > 0)
-        .map((step) => ({
-          tool: step.tool.trim(),
-          arguments: step.arguments ?? {},
-          speak: step.speak?.trim() || undefined
-        }))
-    : [];
-
-  const steps = fromSteps.length > 0
-    ? fromSteps
-    : plan.intent === "execute_skill" && plan.tool?.trim()
-      ? [{
-          tool: plan.tool.trim(),
-          arguments: plan.arguments ?? {},
-          speak: plan.speak?.trim() || undefined
-        }]
-      : [];
-
-  return steps.slice(0, Math.max(1, maxSteps));
-}
-
-function mapToolStepToStrategicActions(step: AgentPlanStep): StrategicAction[] {
-  const actions: StrategicAction[] = [];
-  const makeAction = (
-    kind: StrategicAction["kind"],
-    params: Record<string, unknown>,
-    priority: StrategicAction["priority"] = "normal",
-    style?: string
-  ): StrategicAction => ({
-    id: `planned_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-    kind,
-    params,
-    priority,
-    style,
-    source: "llm",
-    createdAt: Date.now()
-  });
-
-  if (step.speak) {
-    actions.push(makeAction("speak", { text: step.speak }, "normal"));
-  }
-
-  switch (step.tool) {
-    case "chat.send": {
-      const message = String(step.arguments?.message ?? "").trim();
-      if (message) actions.push(makeAction("speak", { text: message }, "normal"));
-      return actions;
-    }
-    case "move.followPlayer": {
-      const playerName = String(step.arguments?.playerName ?? "").trim();
-      if (!playerName) return actions;
-      actions.push(makeAction("follow_player", { ...step.arguments, playerName }, "normal"));
-      return actions;
-    }
-    case "move.stopFollow":
-      actions.push(makeAction("stop_follow", { reason: "planner_requested_stop" }, "high"));
-      return actions;
-    case "mine.collectVisible":
-      actions.push(makeAction("mine_visible", { ...step.arguments }, "normal"));
-      return actions;
-    case "interact.attackPlayer": {
-      const playerName = String(step.arguments?.playerName ?? "").trim();
-      if (!playerName) return actions;
-      actions.push(makeAction("attack_target", { targetName: playerName }, "high", String(step.arguments?.style ?? "default")));
-      return actions;
-    }
-    case "combat.challengeEntity": {
-      const targetText = String(step.arguments?.targetText ?? step.arguments?.targetName ?? "").trim();
-      if (!targetText) return actions;
-      actions.push(makeAction("challenge_entity", { ...step.arguments, targetText }, "high"));
-      return actions;
-    }
-    case "movement.walk":
-      actions.push(makeAction("wander_area", { ...step.arguments }, "low"));
-      return actions;
-    case "interact.eat":
-      actions.push(makeAction("eat_food", { ...step.arguments }, "high", "self_guard"));
-      return actions;
-    case "combat.prepareBattle":
-      actions.push(makeAction("prepare_battle", { ...step.arguments }, "high"));
-      return actions;
-    case "chat.requestTeleportToPlayer": {
-      const playerName = String(step.arguments?.playerName ?? "").trim();
-      if (!playerName) return actions;
-      actions.push(makeAction("request_teleport_to_player", { playerName }, "normal"));
-      return actions;
-    }
-    case "inventory.organizeHotbar":
-      actions.push(makeAction("organize_inventory", {}, "normal"));
-      return actions;
-    case "inventory.holdByCategory": {
-      const category = String(step.arguments?.category ?? "").trim();
-      if (!category) return actions;
-      actions.push(makeAction("equip_category", { category }, "normal"));
-      return actions;
-    }
-    case "interact.openDoor":
-      actions.push(makeAction("open_door", { ...step.arguments }, "normal"));
-      return actions;
-    case "interact.dropHeld":
-    case "interact.dropHotbarSlot":
-      actions.push(makeAction("drop_item", { ...step.arguments }, "normal"));
-      return actions;
-    case "move.goToPosition":
-      if (
-        typeof step.arguments?.x !== "number" ||
-        typeof step.arguments?.y !== "number" ||
-        typeof step.arguments?.z !== "number"
-      ) {
-        return actions;
-      }
-      actions.push(makeAction("move_to_position", { ...step.arguments }, "normal"));
-      return actions;
-    default:
-      return [];
-  }
-}
-
-function buildDirectiveFromPlan(
-  botId: string,
-  userInstruction: string,
-  plan: AgentPlan,
-  maxSteps: number
-): { directive: StrategicDirective | null; leftoverSteps: AgentPlanStep[] } {
-  const explicitActions = (plan.directive?.actions ?? [])
-    .map((action): StrategicAction | null => {
-      if (!action?.kind || typeof action.kind !== "string") return null;
-      if (!ALLOWED_STRATEGIC_ACTION_KINDS.includes(action.kind as StrategicAction["kind"])) return null;
-      return {
-        id: `planned_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-        kind: action.kind as StrategicAction["kind"],
-        params: action.params ?? {},
-        style: action.style,
-        priority: action.priority ?? "normal",
-        source: "llm",
-        createdAt: Date.now()
-      };
-    })
-    .filter((action): action is StrategicAction => !!action);
-
-  if (plan.speak?.trim()) {
-    explicitActions.unshift({
-      id: `planned_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-      kind: "speak",
-      params: { text: plan.speak.trim() },
-      priority: "normal",
-      source: "llm",
-      createdAt: Date.now()
-    });
-  }
-
-  if (explicitActions.length > 0) {
-    return {
-      directive: {
-        id: `directive_${botId}_${Date.now()}`,
-        goal: plan.directive?.goal?.trim() || userInstruction,
-        rationale: plan.directive?.rationale?.trim() || undefined,
-        desiredMode: plan.directive?.desiredMode,
-        actions: explicitActions.slice(0, Math.max(1, maxSteps)),
-        createdAt: Date.now()
-      },
-      leftoverSteps: []
-    };
-  }
-
-  const normalizedSteps = normalizeAgentPlan(plan, maxSteps);
-  const actions: StrategicAction[] = [];
-  const leftoverSteps: AgentPlanStep[] = [];
-  for (const step of normalizedSteps) {
-    const mapped = mapToolStepToStrategicActions(step);
-    if (mapped.length > 0) {
-      actions.push(...mapped);
-    } else {
-      leftoverSteps.push(step);
-    }
-  }
-
-  return {
-    directive:
-      actions.length > 0
-        ? {
-            id: `directive_${botId}_${Date.now()}`,
-            goal: userInstruction,
-            rationale: "translated_from_legacy_tool_steps",
-            actions: actions.slice(0, Math.max(1, maxSteps)),
-            createdAt: Date.now()
-          }
-        : null,
-    leftoverSteps
-  };
-}
 
 async function runPrepareBattle(botId: string, registry: BotRegistry): Promise<string> {
   const bot = registry.get(botId).getActiveBotOrThrow();
@@ -4895,133 +4471,6 @@ async function runTeleportRequest(botId: string, registry: BotRegistry, playerNa
   return `sent /tpa to ${normalizedPlayer}`;
 }
 
-async function requestAgentPlan(
-  config: AgentConfig,
-  userInstruction: string,
-  stateSnapshot: Record<string, unknown>,
-  signal?: AbortSignal
-): Promise<AgentPlan> {
-  if (!config.plannerApiKey) {
-    throw new Error("Agent planner API key is empty. Set MCBOT_AI_API_KEY or configure plannerApiKey in agent.configure");
-  }
-
-  const plannerObservation = buildPlannerContextProjection(stateSnapshot);
-  const plannerMemorySummary = buildPlannerMemorySummary(stateSnapshot);
-  const timeoutMs = resolveAiRequestTimeout(
-    process.env.MCBOT_PLANNER_TIMEOUT_MS ?? process.env.MCBOT_AI_REQUEST_TIMEOUT_MS,
-    15000
-  );
-  const { response, rawBody } = await postOpenAiChatCompletions({
-    apiBaseUrl: config.plannerApiBaseUrl,
-    apiKey: config.plannerApiKey,
-    timeoutMs,
-    signal,
-    body: {
-      model: config.plannerModel,
-      temperature: 0.2,
-      messages: [
-        { role: "system", content: config.plannerSystemPrompt },
-        {
-          role: "system",
-          content:
-            "允许工具:\n" +
-            config.allowedTools.join("\n") +
-            "\n\n输出格式:\n" +
-            '{"intent":"execute_skill"|"no_action","speak":"可选","tool":"可选","arguments":{},"steps":[{"tool":"必填","arguments":{},"speak":"可选"}],"directive":{"goal":"可选","rationale":"可选","desiredMode":"manual|assist|auto","milestones":["可选阶段1","可选阶段2"],"currentMilestoneIndex":0,"actions":[{"kind":"follow_player|attack_target|challenge_entity|stop_follow|eat_food|prepare_battle|request_teleport_to_player|move_to_position|organize_inventory|equip_category|drop_item|open_door|wander_area|socialize|mine_visible|observe_target|speak|idle","params":{},"style":"可选","priority":"low|normal|high|critical"}]}}\n' +
-            "优先输出 directive.actions；只有当你无法稳定映射到高层 action 时，才退回 steps/tool。\n" +
-            "决策时优先参考 task 和 recentEvents；如果 task.activeTask 正在运行，默认不要无故打断。\n" +
-            "输出必须是单个 JSON 对象，不要 Markdown，不要解释，不要额外文本。"
-        },
-        {
-          role: "system",
-          content:
-            '示例1:\n用户: "跟着 Judy，但保持一点距离"\n输出:\n' +
-            '{"intent":"execute_skill","directive":{"goal":"follow Judy","rationale":"owner-like follow request","actions":[{"kind":"follow_player","params":{"playerName":"Judy","minDistance":2.5,"maxDistance":5,"sprint":false,"tickMs":250},"priority":"normal"}]}}'
-        },
-        {
-          role: "system",
-          content:
-            '示例2:\n用户: "先别跟着了，吃点东西"\n输出:\n' +
-            '{"intent":"execute_skill","directive":{"goal":"recover safely","rationale":"stop current follow and recover","actions":[{"kind":"stop_follow","params":{"reason":"recover"},"priority":"high"},{"kind":"eat_food","params":{"reason":"recover"},"priority":"high"}]}}'
-        },
-        {
-          role: "system",
-          content:
-            '示例3:\n用户: "附近有可见煤矿就去挖"\n输出:\n' +
-            '{"intent":"execute_skill","directive":{"goal":"mine nearby visible coal","rationale":"resource gathering request","actions":[{"kind":"mine_visible","params":{"blockNames":["coal_ore","deepslate_coal_ore"],"searchRadius":24,"maxBlocks":8},"priority":"normal"}]}}'
-        },
-        {
-          role: "system",
-          content:
-            '示例4:\n用户: "你现在在做什么"\n输出:\n' +
-            '{"intent":"execute_skill","directive":{"goal":"answer status question","rationale":"user asked for a spoken response only","actions":[{"kind":"speak","params":{"text":"我现在在待命。"},"priority":"normal"}]}}'
-        },
-        {
-          role: "system",
-          content:
-            '示例5:\n用户: "准备战斗"\n输出:\n' +
-            '{"intent":"execute_skill","directive":{"goal":"prepare for combat","rationale":"combat readiness requested","actions":[{"kind":"prepare_battle","params":{"preferIronSword":true,"equipArmor":true},"priority":"high"}]}}'
-        },
-        {
-          role: "system",
-          content:
-            '示例6:\n用户: "把第一格的东西丢掉"\n输出:\n' +
-            '{"intent":"execute_skill","directive":{"goal":"drop item from hotbar","rationale":"explicit inventory drop request","actions":[{"kind":"drop_item","params":{"slot":1,"mode":"stack","restorePrevious":true},"priority":"normal"}]}}'
-        },
-        {
-          role: "system",
-          content:
-            '示例7:\n用户: "挑战一下监守者"\n输出:\n' +
-            '{"intent":"execute_skill","directive":{"goal":"challenge nearby warden","rationale":"start a full duel instead of a single hit","actions":[{"kind":"challenge_entity","params":{"targetText":"监守者","maxDistance":16},"priority":"high"}]}}'
-        },
-        {
-          role: "system",
-          content:
-            '示例8:\n用户: "向 Judy 发个 tpa"\n输出:\n' +
-            '{"intent":"execute_skill","directive":{"goal":"request teleport to Judy","rationale":"send the server teleport request command","actions":[{"kind":"request_teleport_to_player","params":{"playerName":"Judy"},"priority":"normal"}]}}'
-        },
-        {
-          role: "system",
-          content:
-            '示例9:\n用户: "刚刚完成了一个长期目标，Judy 在旁边"\n输出:\n' +
-            '{"intent":"execute_skill","directive":{"goal":"report completed goal","rationale":"a goal lifecycle event just completed and a nearby trusted player can be informed","actions":[{"kind":"speak","params":{"text":"搞定了。"},"priority":"normal"}]}}'
-        },
-        {
-          role: "system",
-          content:
-            '示例10:\n用户: "刚刚放弃了当前目标，附近有白名单玩家"\n输出:\n' +
-            '{"intent":"execute_skill","directive":{"goal":"report abandoned goal briefly","rationale":"goal was abandoned and should be reported briefly without inventing a new task","actions":[{"kind":"speak","params":{"text":"这个先不做了。"},"priority":"normal"}]}}'
-        },
-        { role: "system", content: `记忆摘要:\n${plannerMemorySummary}` },
-        { role: "system", content: `任务上下文投影JSON:\n${JSON.stringify(plannerObservation, null, 2)}` },
-        { role: "user", content: userInstruction }
-      ]
-    }
-  });
-  if (!response.ok) {
-    throw new Error(`Agent planner request failed: HTTP ${response.status} ${rawBody.slice(0, 200)}`);
-  }
-
-  const data = JSON.parse(rawBody) as {
-    choices?: Array<{
-      finish_reason?: string;
-      message?: { content?: unknown; reasoning_content?: string };
-      text?: unknown;
-    }>;
-  };
-  const firstChoice = data.choices?.[0];
-  const content = extractAiText(firstChoice?.message?.content) || extractAiText(firstChoice?.text);
-  if (!content) {
-    throw new Error(`Agent planner returned empty content (${summarizeEmptyAiChoice(firstChoice)})`);
-  }
-
-  const normalized = content.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
-  const parsed = JSON.parse(normalized) as AgentPlan;
-  if (parsed.intent !== "execute_skill" && parsed.intent !== "no_action") {
-    throw new Error("Agent planner returned invalid intent");
-  }
-  return parsed;
-}
 
 function buildAutonomousPlanningInstruction(config: AgentConfig, stateSnapshot: AgentStateSnapshot): string {
   const runtimeState = String(stateSnapshot.runtimeState ?? "idle");
@@ -5071,13 +4520,15 @@ async function runAgentPlanningTurn(
   stateSnapshot: AgentStateSnapshot;
 }> {
   const now = Date.now();
-  if (now - cfg.lastPlanAt < cfg.planCooldownMs) {
-    throw new Error(`Agent planner is cooling down (${cfg.planCooldownMs - (now - cfg.lastPlanAt)}ms remaining)`);
+  hierarchicalAgents.syncBotIds(registry.listBotIds());
+  const runtime = hierarchicalAgents.ensure(botId);
+  runtime.syncPlannerTimestamp(cfg.lastPlanAt);
+  const cooldownRemaining = runtime.plannerCooldownRemaining(now, cfg.planCooldownMs);
+  if (cooldownRemaining > 0) {
+    throw new Error(`Agent planner is cooling down (${cooldownRemaining}ms remaining)`);
   }
 
-  hierarchicalAgents.syncBotIds(registry.listBotIds());
   syncHierarchicalAgentState(botId, registry);
-  const runtime = hierarchicalAgents.ensure(botId);
   runtime.ingestEvent({
     id: `evt_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
     type: "planner_requested",
@@ -5095,25 +4546,18 @@ async function runAgentPlanningTurn(
     process.env.MCBOT_PLANNER_TIMEOUT_MS ?? process.env.MCBOT_AI_REQUEST_TIMEOUT_MS,
     15000
   );
-  const plannerRequest = createRunningAiRequestStatus(plannerTimeoutMs, cfg.plannerModel);
-  const plannerRequestHandle = plannerRequestLifecycle.begin(botId, plannerRequest);
-  let plan: AgentPlan;
-  try {
-    plan = await requestAgentPlan(cfg, userInstruction, stateSnapshot, plannerRequestHandle.signal);
-    plannerRequestHandle.update(finishAiRequestStatus(plannerRequest, "success", { model: cfg.plannerModel }));
-  } catch (error) {
-    plannerRequestHandle.update(
-      finishAiRequestStatus(plannerRequest, classifyAiRequestState(error), {
-        model: cfg.plannerModel,
-        error: error instanceof Error ? error.message : String(error)
-      })
-    );
-    throw error;
-  } finally {
-    plannerRequestHandle.close();
-  }
+  const plan = await runAgentPlannerRequest({
+    botId,
+    config: cfg,
+    userInstruction,
+    stateSnapshot,
+    timeoutMs: plannerTimeoutMs,
+    requester: agentPlanner,
+    lifecycle: plannerRequestLifecycle
+  });
+  const plannerTimestamp = runtime.markPlannerCompleted(now);
   agentConfigStore.updateRuntimeDiagnostics(botId, {
-    lastPlanAt: now,
+    lastPlanAt: plannerTimestamp,
     lastPlanSummary: JSON.stringify(plan)
   });
   const translated = buildDirectiveFromPlan(botId, userInstruction, plan, cfg.maxPlanSteps);
@@ -5195,7 +4639,11 @@ export async function executeAgentToolCall(
   }
 
   if (tool === "move.stopFollow") {
-    await invokeStopFollowCommand(botId, registry, "agent", "agent");
+    await getActionCommandSet(registry).invokeStopFollow({
+      botId,
+      source: "agent",
+      requester: "agent"
+    });
     return "stopped follow";
   }
 
@@ -5255,7 +4703,18 @@ export async function executeAgentToolCall(
   }
 
   if (tool === "interact.eat") {
-    return executeAgentEatTool(registry.get(botId), args);
+    return executeAgentEatTool(
+      {
+        async eatFood(input = {}) {
+          const output = await getActionCommandSet(registry).invokeEat(
+            { botId, source: "agent", requester: "agent" },
+            input
+          );
+          return output.result;
+        }
+      },
+      args
+    );
   }
 
   if (tool === "player.look") {
@@ -5270,19 +4729,17 @@ export async function executeAgentToolCall(
           clearFollowLoopState(botId, registry);
           stopWalkTimer(botId);
           const stopResult = await runtime.stopMovement();
-          pathfinderGoalCache.delete(botId);
+          movementIntentStore.delete(botId);
           if (!stopResult.ok) return stopResult;
 
           const result = await runtime.walkForward({ sprint, jump });
           if (!result.ok) return result;
 
-          const timer = setTimeout(() => {
+          walkTimerLifecycle.schedule(botId, durationMs, () => {
             void stopMovementAndClear(botId, registry).catch(() => {
               // ignore when bot disconnected in timer window
             });
-            walkTimers.delete(botId);
-          }, durationMs);
-          walkTimers.set(botId, timer);
+          });
 
           return {
             ok: true,
@@ -5300,14 +4757,20 @@ export async function executeAgentToolCall(
     if (!["sword", "axe", "pickaxe", "food"].includes(category)) {
       throw new Error(`Unsupported inventory category '${category}'`);
     }
-    const result = await registry.get(botId).holdItemByCategory({ category: category as ToolCategory });
+    const { result } = await getActionCommandSet(registry).invokeHoldByCategory(
+      { botId, source: "agent", requester: "agent" },
+      { category: category as ToolCategory }
+    );
     return result.detail ?? `equipped item for category ${category}`;
   }
 
   if (tool === "interact.openDoor") {
     const reach = Number(args.reach ?? 4.5);
     const radius = Number(args.radius ?? 6);
-    const result = await registry.get(botId).openDoor({ reach, radius });
+    const { result } = await getActionCommandSet(registry).invokeOpenDoor(
+      { botId, source: "agent", requester: "agent" },
+      { reach, radius }
+    );
     return result.detail ?? "toggled door";
   }
 
@@ -5399,7 +4862,7 @@ export async function executeAgentToolCall(
             const arrived = await waitUntilNearPosition(bot, picked.block.position, reachDistance, approachTimeoutMs);
             const pathApi = bot.pathfinder;
             if (pathApi && typeof pathApi.setGoal === "function") pathApi.setGoal(null);
-            pathfinderGoalCache.delete(botId);
+            movementIntentStore.delete(botId);
             if (!arrived) {
               stopReason = "approach_timeout";
               break;
@@ -5442,13 +4905,13 @@ function stopMovement(botId: string, registry: BotRegistry): void {
   void runtime.stopMovement().catch(() => {
     // ignore when bot is already disconnected
   });
-  pathfinderGoalCache.delete(botId);
+  movementIntentStore.delete(botId);
 }
 
 async function stopMovementAndClear(botId: string, registry: BotRegistry): Promise<void> {
   const runtime = registry.get(botId);
   await runtime.stopMovement();
-  pathfinderGoalCache.delete(botId);
+  movementIntentStore.delete(botId);
 }
 
 interface PathfinderModuleCompatibility {
@@ -5511,10 +4974,10 @@ function setPathfinderGoalNear(
   const y = Math.floor(pos.y);
   const z = Math.floor(pos.z);
   const key = `${x},${y},${z},${Math.max(1, Math.floor(range))}`;
-  if (pathfinderGoalCache.get(botId) === key) return true;
+  if (movementIntentStore.get(botId) === key) return true;
 
   try {
-    pathfinderGoalCache.set(botId, key);
+    movementIntentStore.set(botId, key);
     pathApi.setGoal(new GoalNearCtor(x, y, z, Math.max(1, Math.floor(range))), true);
     return true;
   } catch {
@@ -5523,11 +4986,7 @@ function setPathfinderGoalNear(
 }
 
 function stopWalkTimer(botId: string): void {
-  const active = walkTimers.get(botId);
-  if (active) {
-    clearTimeout(active);
-    walkTimers.delete(botId);
-  }
+  walkTimerLifecycle.stop(botId);
 }
 
 function stopFollowLoop(
@@ -5545,60 +5004,25 @@ function stopFollowLoop(
   }
 }
 
-const stopFollowCommandInputSchema = z.object({
-  botId: z.string().min(1)
-});
-
-function getActionCommandDispatcher(registry: BotRegistry): CommandDispatcher {
-  const existing = commandDispatchers.get(registry);
+function getActionCommandSet(registry: BotRegistry): ActionCommandSet {
+  const existing = actionCommandSets.get(registry);
   if (existing) return existing;
 
-  const dispatcher = new CommandDispatcher();
-  dispatcher.register({
-    id: "move.stopFollow",
-    inputSchema: stopFollowCommandInputSchema,
-    execute({ botId }) {
+  const commands = new ActionCommandSet({
+    registry,
+    stopFollow(botId) {
       stopFollowLoop(botId, registry);
-      return {
-        botId,
-        stopped: true,
-        message: "Stopped following"
-      };
     }
   });
-  commandDispatchers.set(registry, dispatcher);
-  return dispatcher;
-}
-
-async function invokeStopFollowCommand(
-  botId: string,
-  registry: BotRegistry,
-  source: CommandSource,
-  requester?: string
-): Promise<CommandOutput> {
-  const result = await getActionCommandDispatcher(registry).invoke({
-    commandId: "move.stopFollow",
-    input: { botId },
-    context: {
-      source,
-      botId,
-      ...(requester === undefined ? {} : { requester })
-    }
-  });
-  if (result.status === "failed") {
-    throw new Error(result.error?.message ?? "move.stopFollow failed");
-  }
-  if (!result.output) {
-    throw new Error("move.stopFollow completed without output");
-  }
-  return result.output;
+  actionCommandSets.set(registry, commands);
+  return commands;
 }
 
 export function getCommandInvocationHistoryForDebug(
   registry: BotRegistry,
   filter: CommandHistoryFilter = {}
 ): CommandInvocationResult[] {
-  return getActionCommandDispatcher(registry).getHistory(filter);
+  return getActionCommandSet(registry).getHistory(filter);
 }
 
 function clearFollowLoopState(
@@ -5608,15 +5032,8 @@ function clearFollowLoopState(
   detail = "follow stopped"
 ): void {
   ensureRuntimeCapability(botId, registry, "stop_follow");
-  const active = followLoops.get(botId);
-  if (active) {
-    clearInterval(active);
-    followLoops.delete(botId);
-  }
-  followMovementHandlers.get(botId)?.unsubscribe();
-  followMovementHandlers.delete(botId);
-  followSessions.delete(botId);
-  pathfinderGoalCache.delete(botId);
+  followSessionLifecycle.stop(botId);
+  movementIntentStore.delete(botId);
   finalizeAgentTask(botId, outcome, {
     ifType: "follow_player",
     detail
@@ -5765,17 +5182,8 @@ function stopDuel(
   detail = "duel stopped",
   payload?: Record<string, unknown>
 ): void {
-  const loop = duelLoops.get(botId);
-  if (loop) {
-    clearInterval(loop);
-    duelLoops.delete(botId);
-  }
-  duelSessions.delete(botId);
-  const h = duelHandlers.get(botId);
-  h?.entityUnsubscribe();
-  h?.movementUnsubscribe();
-  duelHandlers.delete(botId);
-  pathfinderGoalCache.delete(botId);
+  duelSessionLifecycle.stop(botId);
+  movementIntentStore.delete(botId);
   try {
     stopMovement(botId, registry);
   } catch {
@@ -5812,7 +5220,7 @@ function startDuel(
   stopGotoPositionLoop(botId, registry);
 
   const runtime = registry.get(botId);
-  duelSessions.set(botId, {
+  duelSessionLifecycle.setSession(botId, {
     targetId: targetEntity.entityId,
     targetName: targetEntity.name || targetEntity.displayName || "unknown",
     requester,
@@ -5834,7 +5242,7 @@ function startDuel(
 
   const entityUnsubscribe = runtime.subscribeEntityEvents((event) => {
     if (event.type === "entity_dead") {
-      const session = duelSessions.get(botId);
+      const session = duelSessionLifecycle.get(botId);
       if (!session || event.entity.entityId !== session.targetId) return;
       recordAgentEvent(botId, "entity_dead", "normal", {
         entityId: event.entity.entityId,
@@ -5857,15 +5265,15 @@ function startDuel(
     stopDuel(botId, registry, "failed", "bot died during duel");
   });
   const movementUnsubscribe = runtime.subscribeMovementEvents((event) => {
-    const failure = getCurrentMovementFailure(event, pathfinderGoalCache.get(botId), "pursue_entity");
-    if (!failure || !duelSessions.has(botId)) return;
-    pathfinderGoalCache.delete(botId);
+    const failure = getCurrentMovementFailure(event, movementIntentStore.get(botId), "pursue_entity");
+    if (!failure || !duelSessionLifecycle.has(botId)) return;
+    movementIntentStore.delete(botId);
     stopDuel(botId, registry, "failed", `cannot safely pursue duel target (${failure.reason})`);
   });
-  duelHandlers.set(botId, { entityUnsubscribe, movementUnsubscribe });
+  duelSessionLifecycle.trackSubscriptions(botId, { entityUnsubscribe, movementUnsubscribe });
 
   const loop = setInterval(() => {
-    const session = duelSessions.get(botId);
+    const session = duelSessionLifecycle.get(botId);
     if (!session) {
       stopDuel(botId, registry);
       return;
@@ -5884,7 +5292,7 @@ function startDuel(
         stopDuel(botId, registry, decision.outcome, decision.detail);
         return;
       }
-      duelSessions.set(botId, decision.nextSession);
+      duelSessionLifecycle.setSession(botId, decision.nextSession);
       if (!target || target.distance === undefined) return;
 
       updateAgentTask(botId, {
@@ -5895,23 +5303,23 @@ function startDuel(
         const pursuitKey = targetPosition
           ? `duel:${session.targetId}:${Math.floor(targetPosition.x)},${Math.floor(targetPosition.y)},${Math.floor(targetPosition.z)},2`
           : `duel:${session.targetId}:unknown,2`;
-        if (pathfinderGoalCache.get(botId) !== pursuitKey) {
-          pathfinderGoalCache.set(botId, pursuitKey);
+        if (movementIntentStore.get(botId) !== pursuitKey) {
+          movementIntentStore.set(botId, pursuitKey);
           void runtime.pursueEntity({
             entityId: session.targetId,
             stopDistance: 2,
             sprint: true,
             movementId: pursuitKey
           }).catch((error) => {
-            if (pathfinderGoalCache.get(botId) !== pursuitKey) return;
-            pathfinderGoalCache.delete(botId);
+            if (movementIntentStore.get(botId) !== pursuitKey) return;
+            movementIntentStore.delete(botId);
             if (error instanceof SafePathError) {
               stopDuel(botId, registry, "failed", `cannot safely pursue duel target (${error.reason})`);
             }
           });
         }
-      } else if (decision.movement === "hold" && pathfinderGoalCache.has(botId)) {
-        pathfinderGoalCache.delete(botId);
+      } else if (decision.movement === "hold" && movementIntentStore.has(botId)) {
+        movementIntentStore.delete(botId);
         void runtime.stopMovement().catch(() => {});
       }
 
@@ -5928,7 +5336,7 @@ function startDuel(
     }
   }, 250);
 
-  duelLoops.set(botId, loop);
+  duelSessionLifecycle.trackInterval(botId, loop);
   return `Started duel with '${targetEntity.name || targetEntity.displayName || targetEntity.type}' (range=16)`;
 }
 
@@ -6050,7 +5458,7 @@ function maybeAlertGuard(botId: string, registry: BotRegistry, message: string):
   });
   try {
     sendRuntimeChatNoWait(botId, registry, message);
-    botLastProactiveSpeakAt.set(botId, decision.nextLastAlertAt);
+    socialRuntimeStateStore.recordProactiveSpeak(botId, decision.nextLastAlertAt);
   } catch {
     // ignore disconnected bot
   }
@@ -6061,22 +5469,7 @@ function queueSelfGuardTask(botId: string, task: () => Promise<void>): void {
 }
 
 function queueMiningTask<T>(botId: string, task: () => Promise<T>): Promise<T> {
-  const prev = miningTasks.get(botId) ?? Promise.resolve();
-  let resolveOut: (value: T) => void = () => {};
-  let rejectOut: (reason?: unknown) => void = () => {};
-  const out = new Promise<T>((resolve, reject) => {
-    resolveOut = resolve;
-    rejectOut = reject;
-  });
-
-  const next = prev
-    .catch(() => {})
-    .then(task)
-    .then(resolveOut)
-    .catch(rejectOut);
-
-  miningTasks.set(botId, next.then(() => {}).catch(() => {}));
-  return out;
+  return miningTaskQueue.enqueue(botId, task);
 }
 
 function getUnifiedWhitelist(botId: string): Set<string> {
@@ -6110,14 +5503,8 @@ function stopGotoPositionLoop(
   outcome: "finished" | "failed" | "cancelled" = "cancelled",
   detail = "move stopped"
 ): void {
-  const loop = gotoPositionLoops.get(botId);
-  if (loop) {
-    clearInterval(loop);
-    gotoPositionLoops.delete(botId);
-  }
-  gotoPositionMovementHandlers.get(botId)?.unsubscribe();
-  gotoPositionMovementHandlers.delete(botId);
-  pathfinderGoalCache.delete(botId);
+  positionMovementLifecycle.stop(botId);
+  movementIntentStore.delete(botId);
   try {
     const runtime = registry.get(botId);
     if (runtime.getSelfState()) {
@@ -6175,10 +5562,10 @@ function goToPosition(
       updateAgentTask(botId, {
         detail: `moving to target (${decision.distance.toFixed(1)} blocks away)`
       });
-      if (pathfinderGoalCache.get(botId) !== movementId) {
-        pathfinderGoalCache.set(botId, movementId);
+      if (movementIntentStore.get(botId) !== movementId) {
+        movementIntentStore.set(botId, movementId);
         void runtime.moveTo({ ...target, stopRadius, movementId }).catch((error) => {
-          if (gotoPositionLoops.get(botId) !== loop || pathfinderGoalCache.get(botId) !== movementId) return;
+          if (!positionMovementLifecycle.isCurrent(botId, loop) || movementIntentStore.get(botId) !== movementId) return;
           const detail = error instanceof Error ? `move loop error: ${error.message}` : "move loop error";
           stopGotoPositionLoop(botId, registry, "failed", detail);
         });
@@ -6189,13 +5576,12 @@ function goToPosition(
   }, 200);
 
   const movementUnsubscribe = runtime.subscribeMovementEvents((event) => {
-    const failure = getCurrentMovementFailure(event, pathfinderGoalCache.get(botId), "move_to_position");
-    if (!failure || gotoPositionLoops.get(botId) !== loop) return;
-    pathfinderGoalCache.delete(botId);
+    const failure = getCurrentMovementFailure(event, movementIntentStore.get(botId), "move_to_position");
+    if (!failure || !positionMovementLifecycle.isCurrent(botId, loop)) return;
+    movementIntentStore.delete(botId);
     stopGotoPositionLoop(botId, registry, "failed", `continuous move failed (${failure.reason})`);
   });
-  gotoPositionMovementHandlers.set(botId, { unsubscribe: movementUnsubscribe });
-  gotoPositionLoops.set(botId, loop);
+  positionMovementLifecycle.activate(botId, loop, movementUnsubscribe);
 }
 
 async function performIdleWanderStep(botId: string, registry: BotRegistry): Promise<void> {
@@ -6257,9 +5643,10 @@ async function performIdleSocialize(botId: string, registry: BotRegistry): Promi
   });
   if (!nearest) return;
 
-  const lastAt = agentIdleSocialAt.get(botId) ?? 0;
-  if (now - lastAt < Math.max(activePromptProfile.idleSpeakCooldownMs, 20_000)) return;
-  agentIdleSocialAt.set(botId, now);
+  if (!getAgentHierarchicalRuntime(botId).claimIdleSocialAttempt(
+    now,
+    Math.max(activePromptProfile.idleSpeakCooldownMs, 20_000)
+  )) return;
 
   startAgentTask(botId, {
     type: "pathfind_move",
@@ -6575,27 +5962,20 @@ async function runAgentExecutorTick(botId: string, registry: BotRegistry): Promi
 }
 
 function stopAgentExecutorLoop(botId: string): void {
-  const loop = agentExecutorLoops.get(botId);
-  if (loop) {
-    clearInterval(loop);
-    agentExecutorLoops.delete(botId);
-  }
+  agentExecutorLifecycle.stop(botId);
 }
 
 function startAgentExecutorLoop(botId: string, registry: BotRegistry): void {
   stopAgentExecutorLoop(botId);
   const cfg = getOrCreateAgentConfig(botId);
   if (!cfg.enabled || cfg.mode === "manual") return;
-  const loop = setInterval(() => {
-    queueAgentExecutorRun(botId, async () => {
-      try {
-        await runAgentExecutorTick(botId, registry);
-      } catch {
-        // bot may be disconnected or reconnecting
-      }
-    });
-  }, Math.max(1500, cfg.planCooldownMs));
-  agentExecutorLoops.set(botId, loop);
+  agentExecutorLifecycle.start(botId, Math.max(1500, cfg.planCooldownMs), async () => {
+    try {
+      await runAgentExecutorTick(botId, registry);
+    } catch {
+      // bot may be disconnected or reconnecting
+    }
+  });
 }
 
 async function sendReportToNearestWhitelist(botId: string, registry: BotRegistry): Promise<void> {
@@ -6692,7 +6072,7 @@ function ensureRetaliationLoop(botId: string, registry: BotRegistry): void {
           if (pathApi && typeof pathApi.setGoal === "function") {
             pathApi.setGoal(null);
           }
-          pathfinderGoalCache.delete(botId);
+          movementIntentStore.delete(botId);
           bot.setControlState("forward", false);
         }
 
@@ -6738,7 +6118,7 @@ function handleHitReaction(
     healthBefore: previousHealth ?? null,
     healthAfter: bot.health
   });
-  botMood.set(botId, "警觉");
+  socialRuntimeStateStore.setMood(botId, "警觉");
   const runtime = registry.get(botId);
   const selfState = runtime.getSelfState();
   const attackerDetectDistance = Math.max(cfg.retaliationMaxDistance, 16);
@@ -6840,9 +6220,7 @@ function ensureSelfGuardHurtHook(botId: string, registry: BotRegistry): void {
 
 function startSelfGuardLoop(botId: string, registry: BotRegistry): void {
   const initialConfig = getOrCreateSelfGuardConfig(botId);
-  if (!botLastInteractionAt.has(botId)) {
-    botLastInteractionAt.set(botId, Date.now());
-  }
+  socialRuntimeStateStore.initializeInteraction(botId, Date.now());
 
   selfGuardLoopLifecycle.start(botId, initialConfig.tickMs, () => {
     try {
@@ -6902,7 +6280,7 @@ function startSelfGuardLoop(botId: string, registry: BotRegistry): void {
       selfGuardRuntimeStateStore.update(botId, { lastIsNearPlayer: proximity.isNear });
 
       const now = Date.now();
-      const lastInteractionAt = botLastInteractionAt.get(botId) ?? now;
+      const lastInteractionAt = socialRuntimeStateStore.getLastInteractionAt(botId) ?? now;
       if (now - lastInteractionAt >= activePromptProfile.idleNoInteractionMs) {
         maybeSceneLine(botId, registry, "idleMurmur", "……还活着吗。", {
           cooldownMs: activePromptProfile.idleSpeakCooldownMs,
@@ -6926,9 +6304,9 @@ function startSelfGuardLoop(botId: string, registry: BotRegistry): void {
       }
       selfGuardRuntimeStateStore.update(botId, { lastHealth: health });
 
-      if (cfg.autoStopFollowOnLowHealth && vitals.criticalHealth && followSessions.has(botId)) {
+      if (cfg.autoStopFollowOnLowHealth && vitals.criticalHealth && followSessionLifecycle.has(botId)) {
         stopFollowLoop(botId, registry);
-        botMood.set(botId, "紧张");
+        socialRuntimeStateStore.setMood(botId, "紧张");
         maybeAlertGuard(
           botId,
           registry,
@@ -6938,7 +6316,7 @@ function startSelfGuardLoop(botId: string, registry: BotRegistry): void {
           )
         );
       } else if (vitals.lowHealth) {
-        botMood.set(botId, "警觉");
+        socialRuntimeStateStore.setMood(botId, "警觉");
         maybeAlertGuard(
           botId,
           registry,
@@ -6951,11 +6329,11 @@ function startSelfGuardLoop(botId: string, registry: BotRegistry): void {
 
       if (!vitals.shouldEatNow) {
         if (vitals.shouldSetCalm) {
-          botMood.set(botId, "平静");
+          socialRuntimeStateStore.setMood(botId, "平静");
         }
         return;
       }
-      botMood.set(botId, "烦躁");
+      socialRuntimeStateStore.setMood(botId, "烦躁");
       if (vitals.shouldEatForFood) {
         maybeAlertGuard(
           botId,
@@ -6991,7 +6369,7 @@ function startSelfGuardLoop(botId: string, registry: BotRegistry): void {
           }
 
           await queuedRuntime.eatFood({ itemName: foodItem.name });
-          botMood.set(botId, "平静");
+          socialRuntimeStateStore.setMood(botId, "平静");
           maybeAlertGuard(
             botId,
             registry,
@@ -7021,16 +6399,10 @@ function stopSelfGuardLoop(botId: string): void {
   selfGuardHurtSubscriptions.delete(botId);
 
   selfGuardLoopLifecycle.stopRetaliation(botId);
-  const gotoLoop = gotoPositionLoops.get(botId);
-  if (gotoLoop) {
-    clearInterval(gotoLoop);
-    gotoPositionLoops.delete(botId);
-  }
-  gotoPositionMovementHandlers.get(botId)?.unsubscribe();
-  gotoPositionMovementHandlers.delete(botId);
+  positionMovementLifecycle.stop(botId);
   retaliationStateStore.clearBot(botId);
   combatExecutionStateStore.clearBot(botId);
-  pathfinderGoalCache.delete(botId);
+  movementIntentStore.delete(botId);
 }
 
 function ensureSelfGuardWatchdog(registry: BotRegistry): void {
@@ -7160,21 +6532,7 @@ function getOrCreateChatAiConfig(botId: string): ChatAiConfig {
 }
 
 function getOrCreateTerritoryConfig(botId: string): TerritoryConfig {
-  const existing = territoryConfigs.get(botId);
-  if (existing) return existing;
-  const created: TerritoryConfig = {
-    enabled: false,
-    placeIds: [],
-    requiredTags: [],
-    radius: 12,
-    warningCooldownMs: 30_000,
-    warningMessage: "走开。",
-    ownerPresencePolicy: "owner_nearby_only",
-    escalationEnabled: true,
-    escalationDelayMs: 8_000
-  };
-  territoryConfigs.set(botId, created);
-  return created;
+  return territoryConfigStore.getOrCreate(botId);
 }
 
 function findSpecialReply(message: string, config: ChatListenerConfig): string | null {
@@ -7280,39 +6638,6 @@ function getLocalSelfDescriptionReply(): string {
   return lines[Math.floor(Math.random() * lines.length)] ?? "小狸在。";
 }
 
-function extractAiText(value: unknown): string {
-  if (typeof value === "string") return value.trim();
-  if (!Array.isArray(value)) return "";
-  return value
-    .map((part) => {
-      if (typeof part === "string") return part;
-      if (!part || typeof part !== "object") return "";
-      const record = part as Record<string, unknown>;
-      if (typeof record.text === "string") return record.text;
-      if (typeof record.content === "string") return record.content;
-      return "";
-    })
-    .join("")
-    .trim();
-}
-
-function summarizeEmptyAiChoice(choice: unknown): string {
-  if (!choice || typeof choice !== "object") return "choice=missing";
-  const record = choice as Record<string, unknown>;
-  const message = record.message && typeof record.message === "object" ? (record.message as Record<string, unknown>) : {};
-  const messageKeys = Object.keys(message);
-  const content = message.content;
-  const contentType = Array.isArray(content) ? "array" : typeof content;
-  const reasoning = typeof message.reasoning_content === "string" ? message.reasoning_content.trim() : "";
-  const text = typeof record.text === "string" ? record.text.trim() : "";
-  return [
-    `finish_reason=${String(record.finish_reason ?? "unknown")}`,
-    `message_keys=${messageKeys.length > 0 ? messageKeys.join(",") : "none"}`,
-    `content_type=${contentType}`,
-    `has_reasoning_content=${reasoning.length > 0}`,
-    `has_choice_text=${text.length > 0}`
-  ].join("; ");
-}
 
 async function requestAiReply(
   botId: string,
@@ -7487,8 +6812,8 @@ export async function flushActionPersistence(): Promise<void> {
   await Promise.allSettled([
     chatAiTaskQueue.drain(),
     selfGuardTaskQueue.drain(),
-    ...agentExecutorRuns.values(),
-    ...miningTasks.values()
+    ...agentExecutorLifecycle.getTrackedRuns(),
+    ...miningTaskQueue.getTrackedTasks()
   ]);
   await Promise.all([
     persistedChatConfigRepository.flush(),
@@ -7540,13 +6865,13 @@ function startFollow(
   });
   maybeAdvanceFollowStartMilestone(botId, registry, options.playerName);
   const movementUnsubscribe = runtime.subscribeMovementEvents((event) => {
-    const failure = getCurrentMovementFailure(event, pathfinderGoalCache.get(botId), "pursue_entity");
-    if (!failure || !followSessions.has(botId)) return;
-    pathfinderGoalCache.delete(botId);
+    const failure = getCurrentMovementFailure(event, movementIntentStore.get(botId), "pursue_entity");
+    if (!failure || !followSessionLifecycle.has(botId)) return;
+    movementIntentStore.delete(botId);
     stopFollowLoop(botId, registry, "failed", `cannot safely follow (${failure.reason})`);
     sendRuntimeChatNoWait(botId, registry, "我跟不上你啦");
   });
-  followMovementHandlers.set(botId, { unsubscribe: movementUnsubscribe });
+  followSessionLifecycle.trackMovement(botId, movementUnsubscribe);
 
   let lastTargetPos = runtime.getPlayerSnapshot(options.playerName)?.position ?? null;
   let lastTargetMoveAt = Date.now();
@@ -7580,8 +6905,8 @@ function startFollow(
         horizontalDistance
       });
       if (movement === "search") {
-        if (pathfinderGoalCache.has(botId)) {
-          pathfinderGoalCache.delete(botId);
+        if (movementIntentStore.has(botId)) {
+          movementIntentStore.delete(botId);
           void runtime.stopMovement().catch(() => {});
         }
         updateAgentTask(botId, { detail: `searching for ${options.playerName}` });
@@ -7624,8 +6949,8 @@ function startFollow(
       }
 
       if (movement === "out_of_range") {
-        if (pathfinderGoalCache.has(botId)) {
-          pathfinderGoalCache.delete(botId);
+        if (movementIntentStore.has(botId)) {
+          movementIntentStore.delete(botId);
           void runtime.stopMovement().catch(() => {});
         }
         updateAgentTask(botId, { detail: `${options.playerName} is out of follow range` });
@@ -7637,8 +6962,8 @@ function startFollow(
           detail: `following ${options.playerName} (${horizontalDistance.toFixed(1)} blocks away)`
         });
         if (typeof target.entityId !== "number") {
-          if (pathfinderGoalCache.has(botId)) {
-            pathfinderGoalCache.delete(botId);
+          if (movementIntentStore.has(botId)) {
+            movementIntentStore.delete(botId);
             void runtime.stopMovement().catch(() => {});
           }
           updateAgentTask(botId, { detail: `cannot lock entity id for ${options.playerName}` });
@@ -7646,8 +6971,8 @@ function startFollow(
         }
         const range = Math.max(1, Math.floor(options.minDistance));
         const pursuitKey = `follow:${target.entityId}:${Math.floor(targetPos.x)},${Math.floor(targetPos.y)},${Math.floor(targetPos.z)},${range}`;
-        if (pathfinderGoalCache.get(botId) !== pursuitKey) {
-          pathfinderGoalCache.set(botId, pursuitKey);
+        if (movementIntentStore.get(botId) !== pursuitKey) {
+          movementIntentStore.set(botId, pursuitKey);
           void runtime.pursueEntity({
             entityId: target.entityId,
             stopDistance: options.minDistance,
@@ -7655,8 +6980,8 @@ function startFollow(
             jump: targetPos.y - myPos.y > 0.8,
             movementId: pursuitKey
           }).catch((error) => {
-            if (pathfinderGoalCache.get(botId) !== pursuitKey) return;
-            pathfinderGoalCache.delete(botId);
+            if (movementIntentStore.get(botId) !== pursuitKey) return;
+            movementIntentStore.delete(botId);
             const failure = getFollowPursuitFailure(error);
             if (failure) {
               stopFollowLoop(botId, registry, "failed", failure.detail);
@@ -7664,8 +6989,8 @@ function startFollow(
             }
           });
         }
-      } else if (pathfinderGoalCache.has(botId)) {
-        pathfinderGoalCache.delete(botId);
+      } else if (movementIntentStore.has(botId)) {
+        movementIntentStore.delete(botId);
         void runtime.stopMovement().catch(() => {});
       }
     } catch {
@@ -7673,8 +6998,7 @@ function startFollow(
     }
   }, options.tickMs);
 
-  followLoops.set(botId, loop);
-  followSessions.set(botId, {
+  followSessionLifecycle.activate(botId, loop, {
     options,
     startedAt: Date.now()
   });
@@ -7691,15 +7015,15 @@ function ensureChatListenerAttached(botId: string, registry: BotRegistry): void 
   const selfState = runtime.getSelfState();
   if (!selfState) throw new Error(`Bot '${botId}' is not connected`);
 
-  const existing = chatHandlers.get(botId);
-  if (existing && existing.botRef === runtime && runtime.getClientAdapterStatus().connection.connected) {
+  if (
+    chatListenerLifecycle.isCurrent(botId, runtime) &&
+    runtime.getClientAdapterStatus().connection.connected
+  ) {
     return;
   }
 
   chatEventDeduplicator.clearBot(botId);
-
-  existing?.unsubscribe();
-  chatHandlers.delete(botId);
+  chatListenerLifecycle.stop(botId);
 
   const handleIncomingChat = (username: string, message: string): void => {
     if (!chatEventDeduplicator.accept(botId, username, message)) return;
@@ -7710,8 +7034,8 @@ function ensureChatListenerAttached(botId: string, registry: BotRegistry): void 
     if (!config.enabled && !aiConfig.enabled) return;
     if (username === selfState.username) return;
     recordPlayerChatToSharedMemory(botId, username, message);
-    botLastInteractionAt.set(botId, Date.now());
-    botMood.set(botId, "平静");
+    socialRuntimeStateStore.recordInteraction(botId, Date.now());
+    socialRuntimeStateStore.setMood(botId, "平静");
 
     if (shouldRecordValidWakeMessage(message, username, config, aiConfig)) {
       enqueueValidChatLog({
@@ -7756,7 +7080,7 @@ function ensureChatListenerAttached(botId: string, registry: BotRegistry): void 
         }
 
         if (matchesAnyIntent(text, config.intents.status)) {
-          const follow = followSessions.get(botId);
+          const follow = followSessionLifecycle.get(botId);
           if (follow) {
             sendRuntimeChatNoWait(botId, registry, `我正在跟随 ${follow.options.playerName}。`);
           } else {
@@ -7907,18 +7231,18 @@ function ensureChatListenerAttached(botId: string, registry: BotRegistry): void 
                 }
                 if (attackDecision.action === "approach") {
                   const pursuitKey = `chat-attack:${attackDecision.entityId}:2`;
-                  pathfinderGoalCache.set(botId, pursuitKey);
+                  movementIntentStore.set(botId, pursuitKey);
                   try {
                     await runtime.pursueEntity({
                       entityId: attackDecision.entityId,
                       stopDistance: 2,
                       sprint: true
                     });
-                    if (pathfinderGoalCache.get(botId) !== pursuitKey) return;
+                    if (movementIntentStore.get(botId) !== pursuitKey) return;
                     sendRuntimeChatNoWait(botId, registry, `${targetPlayer.username} 有点远，我正在靠近。`);
                   } catch {
-                    if (pathfinderGoalCache.get(botId) !== pursuitKey) return;
-                    pathfinderGoalCache.delete(botId);
+                    if (movementIntentStore.get(botId) !== pursuitKey) return;
+                    movementIntentStore.delete(botId);
                     sendRuntimeChatNoWait(botId, registry, `${targetPlayer.username} 太远了。`);
                   }
                   return;
@@ -8047,16 +7371,11 @@ function ensureChatListenerAttached(botId: string, registry: BotRegistry): void 
   const unsubscribe = runtime.subscribeChatEvents(({ username, message }) => {
     handleIncomingChat(username, message);
   });
-  chatHandlers.set(botId, {
-    botRef: runtime,
-    unsubscribe
-  });
+  chatListenerLifecycle.activate(botId, runtime, unsubscribe);
 }
 
 function ensureListenerWatchdog(registry: BotRegistry): void {
-  if (listenerWatchdogTimer) return;
-
-  listenerWatchdogTimer = setInterval(() => {
+  chatListenerLifecycle.ensureWatchdog(1500, () => {
     for (const botId of registry.listBotIds()) {
       try {
         const chatCfg = chatListenerConfigStore.get(botId);
@@ -8069,16 +7388,12 @@ function ensureListenerWatchdog(registry: BotRegistry): void {
         // Bot is not spawned yet (or reconnecting); watcher will retry on next tick.
       }
     }
-  }, 1500);
+  });
 }
 
 function detachChatListener(botId: string): void {
   chatEventDeduplicator.clearBot(botId);
-  const existing = chatHandlers.get(botId);
-  if (!existing) return;
-
-  existing.unsubscribe();
-  chatHandlers.delete(botId);
+  chatListenerLifecycle.stop(botId);
 }
 
 export async function registerActionTools(server: McpServer, registry: BotRegistry): Promise<void> {
@@ -8185,7 +7500,7 @@ export async function registerActionTools(server: McpServer, registry: BotRegist
               dotPrefix: chat.dotPrefix,
               intents: chat.intents,
               specialReplies: chat.specialReplies,
-              attached: chatHandlers.has(id)
+              attached: chatListenerLifecycle.has(id)
             },
             chatAi: {
               enabled: ai.enabled,
@@ -8409,7 +7724,7 @@ export async function registerActionTools(server: McpServer, registry: BotRegist
           specialReplies: cfg.specialReplies,
           validMessageLogPath: validChatLogPath,
           persistedConfigPath: persistedChatConfigPath,
-          attached: chatHandlers.has(resolvedBotId)
+          attached: chatListenerLifecycle.has(resolvedBotId)
         }));
       } catch (error) {
         return fail(error instanceof Error ? error.message : String(error));
@@ -8598,7 +7913,7 @@ export async function registerActionTools(server: McpServer, registry: BotRegist
             maxToolCallsPerTurn: cfg.maxToolCallsPerTurn,
             allowProactiveAction: cfg.allowProactiveAction,
             allowedTools: cfg.allowedTools,
-            executorAttached: agentExecutorLoops.has(resolvedBotId),
+            executorAttached: agentExecutorLifecycle.isAttached(resolvedBotId),
             queuedStepCount: getQueuedPlannerSteps(resolvedBotId).length,
             strategicGoal: getStrategicGoal(resolvedBotId),
             persistedConfigPath: persistedChatConfigPath
@@ -8705,8 +8020,7 @@ export async function registerActionTools(server: McpServer, registry: BotRegist
       try {
         const resolvedBotId = resolveBotId(registry, botId);
         const normalizedPlayerName = String(playerName ?? "").trim();
-        const profiles = getOrCreateMemoryPlayerProfiles(resolvedBotId);
-        const removed = profiles.delete(normalizedPlayerName);
+        const removed = agentGameMemoryStateStore.deletePlayer(resolvedBotId, normalizedPlayerName);
         if (removed) {
           queuePersistChatState();
           queuePersistSharedGameMemory();
@@ -8805,11 +8119,11 @@ export async function registerActionTools(server: McpServer, registry: BotRegist
       try {
         const resolvedBotId = resolveBotId(registry, botId);
         const normalizedPlaceId = String(placeId ?? "").trim();
-        const places = getOrCreateMemoryPlaces(resolvedBotId);
-        const removed = places.delete(normalizedPlaceId);
+        const removed = agentGameMemoryStateStore.deletePlace(resolvedBotId, normalizedPlaceId);
         if (removed) {
           const territory = getOrCreateTerritoryConfig(resolvedBotId);
           territory.placeIds = territory.placeIds.filter((id) => id !== normalizedPlaceId);
+          territoryConfigStore.replace(resolvedBotId, territory);
           queuePersistChatState();
           queuePersistSharedGameMemory();
         }
@@ -9250,26 +8564,27 @@ export async function registerActionTools(server: McpServer, registry: BotRegist
     async ({ botId, enabled, placeIds, requiredTags, radius, warningCooldownMs, escalationEnabled, ownerPresencePolicy, escalationDelayMs, warningMessage }): Promise<ToolResponse> => {
       try {
         const resolvedBotId = resolveBotId(registry, botId);
-        const territory = getOrCreateTerritoryConfig(resolvedBotId);
-        if (typeof enabled === "boolean") territory.enabled = enabled;
+        const current = getOrCreateTerritoryConfig(resolvedBotId);
+        if (typeof enabled === "boolean") current.enabled = enabled;
         if (placeIds) {
-          territory.placeIds = [...new Set(placeIds.map((x) => String(x).trim()).filter(Boolean))].slice(0, 16);
+          current.placeIds = [...new Set(placeIds.map((x) => String(x).trim()).filter(Boolean))].slice(0, 16);
         }
         if (requiredTags) {
-          territory.requiredTags = [...new Set(requiredTags.map((x) => String(x).trim().toLowerCase()).filter(Boolean))].slice(0, 12);
+          current.requiredTags = [...new Set(requiredTags.map((x) => String(x).trim().toLowerCase()).filter(Boolean))].slice(0, 12);
         }
-        if (typeof radius === "number") territory.radius = Math.max(4, Math.min(64, radius));
+        if (typeof radius === "number") current.radius = Math.max(4, Math.min(64, radius));
         if (typeof warningCooldownMs === "number") {
-          territory.warningCooldownMs = Math.max(1000, Math.min(300_000, warningCooldownMs));
+          current.warningCooldownMs = Math.max(1000, Math.min(300_000, warningCooldownMs));
         }
-        if (typeof escalationEnabled === "boolean") territory.escalationEnabled = escalationEnabled;
-        if (ownerPresencePolicy) territory.ownerPresencePolicy = ownerPresencePolicy;
+        if (typeof escalationEnabled === "boolean") current.escalationEnabled = escalationEnabled;
+        if (ownerPresencePolicy) current.ownerPresencePolicy = ownerPresencePolicy;
         if (typeof escalationDelayMs === "number") {
-          territory.escalationDelayMs = Math.max(1000, Math.min(300_000, escalationDelayMs));
+          current.escalationDelayMs = Math.max(1000, Math.min(300_000, escalationDelayMs));
         }
         if (typeof warningMessage === "string") {
-          territory.warningMessage = warningMessage.trim() || "走开。";
+          current.warningMessage = warningMessage.trim() || "走开。";
         }
+        const territory = territoryConfigStore.replace(resolvedBotId, current);
         queuePersistChatState();
         return ok(
           asText({
@@ -9320,16 +8635,18 @@ export async function registerActionTools(server: McpServer, registry: BotRegist
         const resolvedBotId = resolveBotId(registry, botId);
         const cleared: string[] = [];
         if (scope === "all" || scope === "players") {
-          getOrCreateMemoryPlayerProfiles(resolvedBotId).clear();
+          agentGameMemoryStateStore.clearPlayers(resolvedBotId);
           cleared.push("players");
         }
         if (scope === "all" || scope === "places") {
-          getOrCreateMemoryPlaces(resolvedBotId).clear();
-          getOrCreateTerritoryConfig(resolvedBotId).placeIds = [];
+          agentGameMemoryStateStore.clearPlaces(resolvedBotId);
+          const territory = getOrCreateTerritoryConfig(resolvedBotId);
+          territory.placeIds = [];
+          territoryConfigStore.replace(resolvedBotId, territory);
           cleared.push("places");
         }
         if (scope === "all" || scope === "taskHistory") {
-          agentTaskHistory.set(resolvedBotId, []);
+          agentTaskHistoryStore.clear(resolvedBotId);
           cleared.push("taskHistory");
         }
         queuePersistChatState();
@@ -9428,7 +8745,7 @@ export async function registerActionTools(server: McpServer, registry: BotRegist
             maxToolCallsPerTurn: cfg.maxToolCallsPerTurn,
             allowProactiveAction: cfg.allowProactiveAction,
             allowedTools: cfg.allowedTools,
-            executorAttached: agentExecutorLoops.has(resolvedBotId),
+            executorAttached: agentExecutorLifecycle.isAttached(resolvedBotId),
             queuedStepCount: getQueuedPlannerSteps(resolvedBotId).length,
             strategicGoal: getStrategicGoal(resolvedBotId),
             currentMilestone: getCurrentStrategicMilestone(resolvedBotId),
@@ -9701,7 +9018,7 @@ export async function registerActionTools(server: McpServer, registry: BotRegist
     async ({ botId }): Promise<ToolResponse> => {
       try {
         const resolvedBotId = resolveBotId(registry, botId);
-        return ok(asText(buildAgentStateSnapshot(resolvedBotId, registry)));
+        return ok(asText(getAgentStateSnapshotForDebug(resolvedBotId, registry)));
       } catch (error) {
         return fail(error instanceof Error ? error.message : String(error));
       }
@@ -9787,14 +9104,11 @@ export async function registerActionTools(server: McpServer, registry: BotRegist
         await stopMovementAndClear(botId, registry);
         await runtime.walkForward({ sprint, jump });
 
-        const timer = setTimeout(() => {
+        walkTimerLifecycle.schedule(botId, durationMs, () => {
           void stopMovementAndClear(botId, registry).catch(() => {
             // ignore when bot disconnected in timer window
           });
-          walkTimers.delete(botId);
-        }, durationMs);
-
-        walkTimers.set(botId, timer);
+        });
         return ok(`Walking forward for ${durationMs}ms (sprint=${sprint}, jump=${jump})`);
       } catch (error) {
         return fail(error instanceof Error ? error.message : String(error));
@@ -9866,7 +9180,10 @@ export async function registerActionTools(server: McpServer, registry: BotRegist
     },
     async ({ botId, category }): Promise<ToolResponse> => {
       try {
-        const result = await registry.get(botId).holdItemByCategory({ category });
+        const { result } = await getActionCommandSet(registry).invokeHoldByCategory(
+          { botId, source: "mcp" },
+          { category }
+        );
         return ok(result.detail ? result.detail.replace(/^equipped/, "Equipped") : `Equipped item for category '${category}'`);
       } catch (error) {
         return fail(error instanceof Error ? error.message : String(error));
@@ -10034,7 +9351,10 @@ export async function registerActionTools(server: McpServer, registry: BotRegist
     },
     async ({ botId, itemName }): Promise<ToolResponse> => {
       try {
-        const result = await registry.get(botId).eatFood({ itemName });
+        const { result } = await getActionCommandSet(registry).invokeEat(
+          { botId, source: "mcp" },
+          { itemName }
+        );
         return ok(result.detail ? result.detail.replace(/^ate/, "Ate") : "Ate food");
       } catch (error) {
         return fail(error instanceof Error ? error.message : String(error));
@@ -10090,7 +9410,10 @@ export async function registerActionTools(server: McpServer, registry: BotRegist
     },
     async ({ botId, reach, radius }): Promise<ToolResponse> => {
       try {
-        const result = await registry.get(botId).openDoor({ reach, radius });
+        const { result } = await getActionCommandSet(registry).invokeOpenDoor(
+          { botId, source: "mcp" },
+          { reach, radius }
+        );
         return ok(result.detail ?? "Toggled door");
       } catch (error) {
         return fail(error instanceof Error ? error.message : String(error));
@@ -10237,7 +9560,7 @@ export async function registerActionTools(server: McpServer, registry: BotRegist
               visibleStep,
               approachTimeoutMs
             });
-            pathfinderGoalCache.delete(botId);
+            movementIntentStore.delete(botId);
 
             if (!miningResult.ok) {
               let errorMessage: string;
@@ -10386,7 +9709,7 @@ export async function registerActionTools(server: McpServer, registry: BotRegist
                 if (pathApi && typeof pathApi.setGoal === "function") {
                   pathApi.setGoal(null);
                 }
-                pathfinderGoalCache.delete(botId);
+                movementIntentStore.delete(botId);
                 if (!arrived) {
                   stopReason = "approach_timeout";
                   break;
@@ -10565,7 +9888,7 @@ export async function registerActionTools(server: McpServer, registry: BotRegist
           botId: resolvedBotId,
           health,
           food,
-          followActive: followSessions.has(resolvedBotId),
+          followActive: followSessionLifecycle.has(resolvedBotId),
           hasFoodInInventory: !!foodItem,
           suggested: {
             shouldEat: cfg.autoEat && food <= cfg.lowFood,
@@ -10811,7 +10134,10 @@ export async function registerActionTools(server: McpServer, registry: BotRegist
     },
     async ({ botId }): Promise<ToolResponse> => {
       try {
-        const output = await invokeStopFollowCommand(botId, registry, "mcp");
+        const output = await getActionCommandSet(registry).invokeStopFollow({
+          botId,
+          source: "mcp"
+        });
         return ok(String(output.message ?? "Stopped following"));
       } catch (error) {
         return fail(error instanceof Error ? error.message : String(error));

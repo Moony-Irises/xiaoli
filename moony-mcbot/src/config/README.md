@@ -6,8 +6,13 @@
 - `chat-ai-config-store.ts`：Chat AI 配置及运行时秘密、历史、用户冷却和请求状态的所有权边界。
 - `agent-config-store.ts`：Agent 核心配置及 planner 秘密、最近规划诊断的所有权边界。
 - `self-guard-config-store.ts`：self-guard 配置默认值、阈值归一化、状态所有权和持久化投影。
+- `territory-config-store.ts`：领地配置默认值、按 Bot 隔离、复制、替换和删除；不持有入侵 presence 或警告生命周期。
 
-六个模块都不读取环境变量，也不直接操作 Bot 或 Agent runtime。四个 ConfigStore 分别拥有 `chatByBotId`、`aiByBotId`、`agentByBotId` 核心字段与 `guardByBotId` 对应的内存状态；Chat AI 与 Agent 默认值通过工厂注入，Agent allowlist 解析通过函数注入。Agent 的战略目标、记忆、任务历史和领地仍由 `action-tools` 组合进同一持久化记录；planner 冷却/执行、self-guard tick 回调/反击业务、四表事务提交、监听器 cleanup、环境覆盖和 runtime reconcile 也仍由旧编排层负责。当前 AI 请求由 `runtime/AiRequestLifecycle` 管理，Chat AI 与 self-guard 的排队 tail、待执行任务代次由各自的 `runtime/InvalidatableTaskQueue` 实例管理，self-guard 原生受伤 listener 由 `runtime/SelfGuardHurtSubscriptionRegistry` 管理，self-guard 主/持续反击 interval 与 watchdog 句柄由 `runtime/SelfGuardLoopLifecycle` 管理，反击 session 与命中衰减状态由 `runtime/RetaliationStateStore` 管理，告警冷却与上一轮观察状态由 `runtime/SelfGuardRuntimeStateStore` 管理，旧编排层共享的装备节流与反击命中序号由 `runtime/CombatExecutionStateStore` 管理，Mineflayer 昼夜/下雨兼容读取与转场判定由无状态的 `runtime/self-guard-environment` 管理，告警冷却允许条件、周期生命/饥饿、reactive 阈值信号、Bot 重连/健康下降核心转场、库存摘要和附近玩家进入判定由无状态的 `runtime/self-guard-state` 管理，疑似攻击者选择、后续目标快照复核与持续反击 tick 条件判定由无状态的 `runtime/self-guard-retaliation` 管理。
+`ChatListenerConfigStore` 只拥有监听开关、白名单、唤醒规则和持久化投影，不持有实际聊天订阅或 watchdog。按 Bot 的 Runtime 引用、`unsubscribe` 回调和单例监听 watchdog 由 `runtime/ChatListenerLifecycle` 管理；`action-tools` 负责在配置提交、重连和 shutdown 时协调两者。
+
+七个模块都不读取环境变量，也不直接操作 Bot 或 Agent runtime。四个核心 ConfigStore 分别拥有 `chatByBotId`、`aiByBotId`、`agentByBotId` 与 `guardByBotId` 配置表，`TerritoryConfigStore` 拥有 Agent 记录中的领地配置运行时副本；Chat AI 与 Agent 默认值通过工厂注入，Agent allowlist 解析通过函数注入。Agent 的战略目标、玩家/地点记忆、任务历史和领地仍由 `action-tools` 组合进同一持久化记录，但任务历史、玩家/地点工作集和领地配置的内存所有权已分别由 `runtime/AgentTaskHistoryStore`、`memory/AgentGameMemoryStateStore` 和本 Store 拥有；`runtime/TerritoryRuntime` 组合 presence、短期状态与警告判定，旧编排层只提供配置/快照和聊天、事件、决斗 hooks。planner 冷却时间戳判定已由 `HierarchicalAgentRuntime` 负责，planner 请求/执行、self-guard tick 回调/反击业务、四表事务提交、监听器 cleanup、环境覆盖和 runtime reconcile 仍由旧编排层负责。当前 AI 请求由 `runtime/AiRequestLifecycle` 管理，Chat AI 与 self-guard 的排队 tail、待执行任务代次由各自的 `runtime/InvalidatableTaskQueue` 实例管理，self-guard 原生受伤 listener 由 `runtime/SelfGuardHurtSubscriptionRegistry` 管理，self-guard 主/持续反击 interval 与 watchdog 句柄由 `runtime/SelfGuardLoopLifecycle` 管理，反击 session 与命中衰减状态由 `runtime/RetaliationStateStore` 管理，告警冷却与上一轮观察状态由 `runtime/SelfGuardRuntimeStateStore` 管理，旧编排层共享的装备节流与反击命中序号由 `runtime/CombatExecutionStateStore` 管理，Mineflayer 昼夜/下雨兼容读取与转场判定由无状态的 `runtime/self-guard-environment` 管理，告警冷却允许条件、周期生命/饥饿、reactive 阈值信号、Bot 重连/健康下降核心转场、库存摘要和附近玩家进入判定由无状态的 `runtime/self-guard-state` 管理，疑似攻击者选择、后续目标快照复核与持续反击 tick 条件判定由无状态的 `runtime/self-guard-retaliation` 管理。
+
+Agent 玩家/地点的运行时工作集及共享基线已由 `memory/AgentGameMemoryStateStore` 拥有；`action-tools` 只保留输入归一化、时间戳生成、旧配置投影、共享文件 I/O 队列和 territory 联动。任务历史继续由 `runtime/AgentTaskHistoryStore` 拥有，二者都不会读取配置文件或环境变量。
 
 ## 当前契约
 
@@ -19,7 +24,7 @@
 
 ## 热重载边界
 
-`action-tools` 先通过 `PersistedChatConfigRepository.load()` 读取并完整校验候选文档，再同步提交四个配置表。四类核心配置的 replace/delete 分别委托给对应 Store；Agent 的 goal/memory/territory 扩展仍在同一提交阶段由旧编排层应用。解析失败不会修改现有内存状态。成功提交会删除文件中已经消失的条目及对应 Agent 记忆、目标和领地派生状态；存续 Chat AI 条目的 API key、聊天历史、用户冷却表和请求诊断对象，以及存续 Agent 条目的 planner API key、最近规划时间/摘要/结果和请求诊断对象都会保留。文件中的旧 `apiKey` / `plannerApiKey` 仍被忽略。
+`action-tools` 先通过 `PersistedChatConfigRepository.load()` 读取并完整校验候选文档，再同步提交四个核心配置表。四类核心配置的 replace/delete 分别委托给对应 Store，Agent 的 territory 配置 replace/delete 也委托给 `TerritoryConfigStore`；Agent 的 goal/memory/territory 持久化组合仍在同一提交阶段由旧编排层应用，配置替换/删除同时通过 `TerritoryRuntime.clearBot()` 清理短期 presence。解析失败不会修改现有内存状态。成功提交会删除文件中已经消失的条目及对应 Agent 记忆、目标和领地派生状态；存续 Chat AI 条目的 API key、聊天历史、用户冷却表和请求诊断对象，以及存续 Agent 条目的 planner API key、最近规划时间/摘要/结果和请求诊断对象都会保留。文件中的旧 `apiKey` / `plannerApiKey` 仍被忽略。
 
 进行中的 Chat AI 请求仍使用启动时捕获的模型配置，但请求状态通过 botId 和请求代次写入当前 Store。热重载复用同一个历史数组，裁剪也原地执行，因此完成记录和 `lastRequest` 不再停留在被替换对象。删除配置会失效当前请求并阻止迟到回写。
 
@@ -41,6 +46,7 @@ self-guard 配置 replace、手动 configure、停用或删除会推进任务队
 
 ```powershell
 npm test -- test/self-guard-state.test.ts test/self-guard-retaliation.test.ts test/self-guard-environment.test.ts test/combat-execution-state-store.test.ts test/self-guard-runtime-state-store.test.ts test/retaliation-state-store.test.ts test/self-guard-loop-lifecycle.test.ts test/self-guard-hurt-subscriptions.test.ts test/invalidatable-task-queue.test.ts test/ai-request-lifecycle.test.ts test/agent-config-store.test.ts test/self-guard-config-store.test.ts test/chat-ai-config-store.test.ts test/chat-listener-config-store.test.ts test/persisted-chat-config-repository.test.ts test/chat-config-reload.test.ts test/runtime-shutdown-lifecycle.test.ts
+npm test -- test/agent-task-history-store.test.ts test/chat-config-reload.test.ts
 npm run typecheck
 npm run lint
 ```

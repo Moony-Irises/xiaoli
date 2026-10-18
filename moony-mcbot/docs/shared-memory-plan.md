@@ -196,29 +196,21 @@ XIAOLI_MEMORY_DIR=C:\xiaoli\memory
 
 ### Phase 1：新增 `MemoryStore`
 
-新增一个小模块，先只包装现有 player/place/taskHistory 读写，不改变工具契约。
+当前进度：已完成，并按状态与文件职责拆成两个边界：
 
-当前进度：`src/memory/game-memory-store.ts` 已完成 Phase 1a 基础。它使用 `XIAOLI_MEMORY_DIR` / `MCBOT_MEMORY_DIR`，支持 `players.json` 与 `places.json` 的规范化、缺失/损坏文件安全降级和原子替换写入。当前尚未接入 McBot runtime，因此不会读取或覆盖真实共享玩家/地点资料；task history 与 `episodes.jsonl` 仍留在后续阶段。
+- `src/memory/agent-game-memory-state-store.ts` 拥有按 Bot 隔离的玩家/地点工作集和共享基线，负责复制、替换、严格较新合并、跨 Bot 聚合、删除与清空。
+- `src/memory/game-memory-store.ts` 使用 `XIAOLI_MEMORY_DIR` / `MCBOT_MEMORY_DIR`，负责 `players.json` 与 `places.json` 的规范化、缺失/损坏文件安全降级和原子替换写入。
+- `taskHistory` 是 Bot 私有运行历史，不写入共享玩家/地点文件；其内存所有权由 `runtime/AgentTaskHistoryStore` 管理。
 
-建议接口：
-
-```ts
-interface MemoryStore {
-  loadPlayers(botId: string): Promise<Map<string, AgentMemoryPlayerProfile>>;
-  savePlayers(botId: string, players: Map<string, AgentMemoryPlayerProfile>): Promise<void>;
-  loadPlaces(botId: string): Promise<Map<string, AgentMemoryPlaceRecord>>;
-  savePlaces(botId: string, places: Map<string, AgentMemoryPlaceRecord>): Promise<void>;
-  appendEpisode(event: MemoryEpisode): Promise<void>;
-}
-```
+两个 Store 都不持有 Bot、ConfigStore、territory 或业务写入队列。输入归一化、`updatedAt` 生成、旧配置投影和共享文件写入编排仍由 `action-tools.ts` 负责。
 
 ### Phase 2：双写
 
-当前进度：已完成运行时双写。`memory.player.*`、`memory.place.*`、对应删除，以及 `memory.clear` 的 players/places/all 范围仍会保存到旧 `chat-configs.json`，并会异步更新共享 `players.json` 与 `places.json`。共享快照只含玩家和地点资料，不包含 task history、聊天 pending、API key、账号或运行时配置；启动读取尚未切换，所以不会用共享文件覆盖当前运行时。
+当前进度：已完成运行时双写。`memory.player.*`、`memory.place.*`、对应删除，以及 `memory.clear` 的 players/places/all 范围会先更新 `AgentGameMemoryStateStore`，仍保存到旧 `chat-configs.json`，并异步更新共享 `players.json` 与 `places.json`。共享快照只含玩家和地点资料，不包含 task history、聊天 pending、API key、账号或运行时配置。
 
 `memory.player.*` 和 `memory.place.*`：
 
-- 继续更新内存 Map
+- 更新 `AgentGameMemoryStateStore`
 - 继续保存到旧 `chat-configs.json`
 - 同时保存到 `C:\xiaoli\memory`
 
@@ -234,11 +226,12 @@ interface MemoryStore {
 
 启动时：
 
-1. 先读 `C:\xiaoli\memory`
-2. 如果共享文件不存在，再读旧 `chat-configs.json`
-3. 如果旧配置里有 memory，提供一次迁移命令
+1. 先读取旧 `chat-configs.json`，恢复每个 Bot 的玩家/地点记录。
+2. 再读取共享 `players.json` / `places.json`。
+3. 同名共享记录只有 `updatedAt` 严格更晚时才覆盖当前工作集；时间戳相同仍保留当前记录。
+4. 共享文件缺失、为空或损坏时保留旧配置恢复结果，不清空运行时状态。
 
-当前边界：尚未删除旧 memory 持久化，也没有提供自动清理旧数据的迁移命令；需要先完成真实重启回归，再决定是否逐步收窄旧配置里的 memory 字段。
+当前边界：尚未删除旧 memory 持久化，也没有提供自动清理旧数据的迁移命令；需要先完成真实重启回归，再决定是否逐步收窄旧配置里的 memory 字段。Voice 继续只读共享文件，不读取 McBot 的私有 Store。
 
 ### Phase 4：TTS / voice 接入
 

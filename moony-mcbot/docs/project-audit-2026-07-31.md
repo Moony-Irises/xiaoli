@@ -115,7 +115,7 @@
 
 建议：Catalog 下一阶段不只是 metadata，应增加统一 `invoke(commandId, input, context)` 边界。先迁移低风险、已 Adapter 化的动作，并保留现有 MCP 工具名作为兼容别名。
 
-实施状态：2026-07-31 已完成 `move.stopFollow` 首个试点。MCP、Web 和 Agent 现在经过同一个 CommandDispatcher handler，保留原输入与返回契约，并记录来源、requestId、耗时及 `executed` / `failed` 终态；Web 可直接查看跨入口 Command History。MCP 仍保留原 SDK schema 作为协议边缘校验，其他命令、统一权限、`accepted` / `confirmed` / `cancelled` 和证据事件仍未完成，因此“三套入口”问题只缩小了一个切面。
+实施状态：2026-07-31 完成 `move.stopFollow` 首个试点，2026-08-06 增加 `interact.eat`、`inventory.holdByCategory` 与 `interact.openDoor` 第二至第四试点。四个命令的 MCP、Web 和 Agent 现在分别经过共享 CommandDispatcher handler，保留原输入与返回契约，并记录来源、requestId、耗时及 `executed` / `failed` 终态；Web 可直接查看跨入口 Command History。四个 canonical schema、输出守卫、注册和 typed invocation 已进一步从 `action-tools.ts` 收敛到独立 `ActionCommandSet`，旧文件只保留入口适配、命令集缓存和 follow 回调注入。MCP 仍保留原 SDK schema 作为协议边缘校验，Agent 进食的默认权限仍关闭，库存类别持有与开门的默认权限则保持原本开放。其余命令、统一权限、`accepted` / `confirmed` / `cancelled` 和证据事件仍未完成，因此“三套入口”问题只缩小了四个切面。
 
 ### P1：`action-tools.ts` 是主要状态所有者和最大变更热点
 
@@ -127,11 +127,47 @@
 
 实施状态：2026-08-03 已完成 `ConfigRepository` 文件生命周期第一阶段，并把聊天监听、Chat AI、Agent 核心配置与 self-guard 配置的类型、默认构造、运行时 Map、replace/delete 和持久化投影迁入各自 ConfigStore。Chat AI Store 显式保留热重载前的运行时 API key、历史、用户冷却表和请求状态对象；Agent Store 保留 planner API key、最近规划时间/摘要/结果和请求状态对象。Chat AI 与 planner 当前请求的 `AbortController`、请求代次和诊断回写门控也已迁入独立 `AiRequestLifecycle`，热重载后按 botId 写入当前 Store；Chat AI 与 self-guard 排队 tail、配置代次失效和动态 drain 已迁入各自 `InvalidatableTaskQueue`，self-guard 原生受伤 handler 已迁入独立订阅 registry 并按 botId 读取当前配置，主/持续反击 interval 与 watchdog 句柄已迁入独立 `SelfGuardLoopLifecycle`，反击 session 与命中衰减状态已迁入独立 `RetaliationStateStore`，告警冷却与上一轮观察状态已迁入独立 `SelfGuardRuntimeStateStore`，旧编排层共享的装备节流与反击命中序号已迁入独立 `CombatExecutionStateStore`，昼夜/下雨兼容读取与转场判定已迁入纯 `self-guard-environment` 边界，疑似攻击者选择、后续反击目标 Adapter 快照复核和持续反击 tick 决策已迁入纯 `self-guard-retaliation` 边界。Agent 的战略目标/记忆/任务历史/领地组合、planner 冷却/执行、self-guard 完整 tick/追击与攻击业务、真实伤害来源判定、Adapter 世界环境快照、四表同步 commit、其余 listener cleanup 与环境覆盖仍在 `action-tools.ts`，因此本项尚未完成。
 
+2026-08-24 补充：聊天订阅句柄、对应 Runtime 引用与单例监听 watchdog 已从 `action-tools.ts` 的裸 Map/变量迁入 `ChatListenerLifecycle`。同 Runtime 且已连接时仍复用订阅，替换和停用仍先解绑再删除，解绑失败保留登记，shutdown 继续逐 Bot 隔离错误；配置、消息处理、去重和重连协调未迁移。生命周期单元测试与 MCP 启用/重复启用/停用接线测试已覆盖资源边界，但真实服务器聊天回显、断线重连和重复消息仍需按手动测试指南验证。
+
+2026-08-24 再补充：`action-tools.ts` 最后一张顶层裸任务 Map `miningTasks` 已迁入 `MiningTaskQueue`。同 Bot 串行、跨 Bot 并发、原结果/错误回传、失败后继续、完成 tail 留存和 shutdown 单次快照等待均有单元测试，采矿、MCP Catalog、Agent dispatcher 与 shutdown 相邻回归共 63 项通过。四条旧采矿执行链及其 Mineflayer 依赖没有迁移，因此该项只是 Promise tail 所有权收口，不能视为批量采矿 Adapter 化或真实游戏验收。
+
 2026-08-05 补充：self-guard 附近玩家的自身排除、距离校验、包含边界和首次进入转场，以及主 tick 的 Bot 引用变化与严格超过 `0.5` 的健康下降条件，已迁入纯 `self-guard-state` 决策。首次采样、vitals 不可用和非有限历史健康值均 fail-closed；重连短句、受伤处理、随机概率、场景聊天和上一轮状态写入顺序未迁移，不能据此宣称完整 tick 已脱离 `action-tools.ts`。
 
 2026-08-06 补充：低生命/低饥饿 reactive 转场、事件优先级/payload 和下一组去重 flags 已迁入纯 `self-guard-state` 判别联合；原 Store 模块继续 re-export flags 类型以保持内部类型路径兼容。Agent 事件发布和 flags 写入仍由 `action-tools.ts` 按原顺序执行；发布函数继续内部隔离桥接异常，随后仍更新 flags 的旧行为保持不变。
 
 2026-08-06 补充：`maybeAlertGuard` 的启用、严格冷却边界和无效时间 fail-closed 已迁入纯 `self-guard-state`；允许时仍由旧编排层先写 `lastAlertAt` 再尝试聊天，发送失败不回滚。完整 tick 快照会提前部分 Adapter 采集并改变异常路径，等待原子快照或分阶段 plan 后再做。
+
+2026-08-06 补充：四个已迁移动作的 canonical schema、输出守卫、CommandDispatcher 注册和 typed invocation 已迁入 `src/commands/action-command-set.ts`。该模块仅依赖最小 Runtime 接口和注入的停止跟随回调；`action-tools.ts` 不再直接拥有这些命令定义，但 follow loop、入口协议适配、其余命令和领域状态仍未迁移，因此最大热点问题只缩小了一处明确边界。
+
+2026-08-12 补充：跟随 interval、session 元数据和 movement subscription 已迁入 `src/runtime/follow-session-lifecycle.ts`，`action-tools.ts` 只保留启动顺序、跟随 tick、路径缓存、任务结算与入口编排。普通停止仍按旧顺序清理，shutdown 仍分为 interval 与 subscription 两阶段并隔离单个清理异常；session 元数据的 shutdown 清除没有在本轮改变。新增 7 项生命周期单元测试和 50 项相邻回归通过，但这仍不能替代真实服务器上的跟随、不可达地形和断线重连验收。
+
+2026-08-12 补充：原先由 `action-tools.ts` 裸 `Map` 持有的当前移动相关标识已迁入 `src/runtime/movement-intent-store.ts`。follow、定点移动、决斗、聊天攻击和采矿继续使用原 key 格式与清理时机，旧 Promise 和 movement event 仍必须匹配当前 key 才能影响任务；Store 不持有 Pathfinder、Adapter 或任务副作用。新增 3 项 Store 单元测试和 75 项相邻回归通过，但真实地形中的目标替换、途中封路和停止仍需手测。
+
+2026-08-12 补充：定点移动 interval 与 movement subscription 已从 `action-tools.ts` 的两张裸 Map 迁入 `src/runtime/position-movement-lifecycle.ts`。普通停止、self-guard 停止和 shutdown 仍保留原清理顺序；生命周期只拥有句柄，安全路径、movement intent、任务结算、停止移动和事件发布仍由旧编排层负责。新增 6 项生命周期测试，接线后 43 项相邻回归、源码 typecheck 与局部 lint 通过；这仍不能替代真实服务器的绕障、途中封路、主动停止和断线回归。
+
+2026-08-12 补充：持续对决 interval、session 元数据和 entity/movement subscription 已从 `action-tools.ts` 的三张裸 Map 迁入 `src/runtime/duel-session-lifecycle.ts`。普通停止仍按 interval、session、实体订阅、移动订阅的旧顺序清理，shutdown 仍先释放 interval、再逐项隔离订阅错误并保留 session 元数据；目标选择、追击/攻击和任务副作用未迁移。新增 7 项生命周期测试，接线后 78 项相邻回归、源码 typecheck 与局部 lint 通过；真实服务器的目标死亡、自身死亡、短暂/持续丢失、追击失败和断线仍需手测。
+
+2026-08-12 补充：`movement.walk` 的每 Bot 停止 timeout 已从 `action-tools.ts` 的裸 Map 迁入 `src/runtime/walk-timer-lifecycle.ts`，系统 timeout 创建/清理由可注入 scheduler 提供。Agent/MCP 两个入口仍先显式停止旧 timer 和当前移动，再启动直接前进并登记新 timer；到期仍先请求停止移动、再删除记录，shutdown 统一清除已登记句柄。新增 7 项生命周期测试与 3 项 MCP/动作 runtime 行为级回归，接线后 63 项相邻回归、源码/测试 typecheck 与局部 lint 通过；该动作仍无地形前视或落差保护，默认 Agent 权限保持关闭，真实游戏停止效果仍需在安全区域手测。
+
+2026-08-14 补充：Agent executor interval 与按 Bot 串行 Promise tail 已从 `action-tools.ts` 的两张裸 Map 迁入 `src/runtime/agent-executor-lifecycle.ts`。同 Bot tick 继续串行、不同 Bot 继续独立，任务异常不阻断下一次运行；普通停止与 shutdown 只清 interval，配置删除只遗忘被跟踪 tail，当前工作不会被取消，persistence flush 仍等待调用时的一次 Promise 快照。新增 8 项生命周期测试和 1 项 MCP 状态接线测试，接线后 29 项相邻回归、源码/测试 typecheck 与局部 lint 通过；planner 冷却、执行、状态写入和可取消/dynamic drain 语义尚未迁移。
+
+2026-08-14 再补充：任务 timeout timer 的当前 ID、executor tick 冷却门和 planner 冷却时间戳判定已从 `action-tools.ts` 的协调状态迁入 `HierarchicalAgentRuntime`。同一 Bot 的 timeout 替换、清除、过期事件、严格 tick 间隔、planner 首次/到期、时钟回退和旧诊断时间戳同步均有 Agent runtime 回归测试；配置 `lastPlanAt` 仍保留为诊断镜像，记忆、planner 请求/执行和完整 tick 副作用仍未迁移。
+
+2026-08-20 补充：Agent task progress 的最近详情/时间节流裸 Map 已迁入 `HierarchicalAgentRuntime`。Runtime 只拥有只读判定、成功事件后的时间记录和显式清理，Supervisor 删除清理不会为缺失 Bot 创建 runtime；`action-tools.ts` 仍负责事件发布。新增 2 项边界测试和 20 项相邻回归通过，任务切换、详情变化、严格 1200ms 边界、时钟回退、配置删除和公共事件契约保持不变。
+
+2026-08-20 补充：Agent 战略生命周期的两张最后处理事件 ID 裸 Map 已迁入 `HierarchicalAgentRuntime`。普通生命周期提示保留“检查并立即占用”语义，完成/放弃汇报保留“聊天成功后才记账”语义，二者互不覆盖；Supervisor 配置删除清理不会为缺失 Bot 创建 runtime。生命周期历史、指令生成、汇报目标选择、聊天和公共事件仍由原编排层负责。
+
+2026-08-20 补充：Agent 库存变化事件的摘要基线裸 Map 已迁入 `HierarchicalAgentRuntime`。Runtime 保留首次采样不发布、相同摘要抑制、变化时先写新基线和 Agent 配置删除清理语义；普通 self-guard stop/delete 不重置该基线。库存摘要算法、Adapter 快照采集和 `inventory_changed` 事件发布仍在既有边界，未新增持久化字段。
+
+2026-08-20 补充：Agent 空闲白名单社交的最后尝试时间裸 Map 已迁入 `HierarchicalAgentRuntime`。Runtime 保留旧时间戳初值、精确冷却边界、时钟回退抑制和“目标选中后立即占用”语义，因此后续实体消失或场景台词失败仍进入冷却；普通 executor 停止和策略切换不重置，Agent 配置删除显式清理。候选筛选、记忆评分、Mineflayer 转头、任务与聊天副作用未迁移。
+
+2026-08-20 补充：最近任务历史的裸 Map 已迁入 `src/runtime/agent-task-history-store.ts`。Store 按 Bot 隔离记录，输入和查询均返回副本，并统一执行最近 20 条裁剪、持久化替换、清空和配置删除；任务结算、写入队列以及 `memory.taskHistory` 的持久化组合仍在 `action-tools.ts`。新增 5 项 Store 单元测试，并在配置热重载集成测试中确认历史恢复；公共 MCP/Web/JSON 字段和游戏行为未改变。
+
+2026-08-20 补充：玩家/地点与共享基线的四张裸 Map 已迁入 `src/memory/agent-game-memory-state-store.ts`。Store 统一处理按 Bot 隔离、副本边界、共享严格较新导入、跨 Bot 同时间戳后遍历覆盖、替换、清空和删除；配置热重载集成测试确认 Judy 与 home 恢复及配置删除清理。输入归一化、时间戳、双写队列、`version: 1` 文件、territory 联动及公共 MCP/Web/JSON 和游戏行为未改变。
+
+2026-08-20 补充：领地配置的裸 Map 已迁入 `src/config/territory-config-store.ts`，短期 presence 状态的裸 Map 已迁入 `src/runtime/territory-presence-store.ts`。纯 `src/runtime/territory-presence.ts` 与 `src/runtime/territory-warning-state.ts` 分别计算入侵者和警告/升级状态转移；`src/runtime/territory-runtime.ts` 进一步组合 presence、active-key prune、状态写回、按 Bot 清理与同步 hook 顺序。配置热重载集成测试确认完整恢复、半径/地点替换和 Agent 删除后的默认配置，Runtime/Store/判定测试覆盖复合 key 隔离、时间边界、离开重入及 hook 异常后的状态顺序。`action-tools.ts` 仍采集配置、地点和玩家快照并实现聊天、事件、决斗 hooks；持久化及公共 MCP/Web/JSON 和游戏行为未改变。
+
+2026-08-24 补充：社交与人格短期状态的五张裸 Map 已迁入 `src/runtime/social-runtime-state-store.ts`。Store 按 Bot 统一隔离最近互动、主动发言时间、短期回复上下文、心情和场景台词冷却，并用 `claimSceneLine()` 保留发送前占用、精确冷却和时钟回退语义；输入/输出上下文均复制。聊天、self-guard、动态 AI 和共享记忆编排没有迁移，状态不持久化。由于尚无统一 `BotRegistry.delete()` 清理钩子，`clearBot()` 暂未接入生产路径；这不是完整生命周期清理，也不改变公共契约或游戏行为。
 
 ### P1（静态门禁已修复）：自动化测试没有覆盖真实执行边界
 
@@ -217,15 +253,15 @@ Node 24.16 本机的 lint、源码/测试 typecheck、217 项完整测试和 bui
 
 1. 让 `BotRuntime` 完整委托 Adapter 连接和断开生命周期。（已完成，真实服务器回归待测）
 2. 为 Factory 注入 Adapter 选择，但先保留 Mineflayer 为默认值。（内部构造注入已完成，公开配置等待 Bridge）
-3. 建立统一 Command Invocation / Action Result，先接 Web 和一个 MCP 领域。（`move.stopFollow` 试点已完成，其余命令与权限仍待迁移）
+3. 建立统一 Command Invocation / Action Result，先接 Web 和一个 MCP 领域。（`move.stopFollow`、`interact.eat`、`inventory.holdByCategory` 与 `interact.openDoor` 四个试点已完成，其余命令与权限仍待迁移）
 4. 把 accepted、executed、confirmed、failed、cancelled 与证据写进同一事件流。
 
 退出条件：同一动作从 Web、MCP、Agent 调用时经过同一 schema、权限和执行函数。
 
 ### 阶段 C：按状态所有权拆分旧编排层
 
-1. `ConfigRepository`（文件 I/O、解析、串行写入与 flush 已抽出；chat listener、Chat AI、Agent 核心配置与 self-guard 状态已迁移，Agent 组合状态和四表 commit 待迁移）
-2. `ChatRuntime`
+1. `ConfigRepository`（文件 I/O、解析、串行写入与 flush 已抽出；chat listener、Chat AI、Agent 核心配置、领地配置及 presence/警告协调、最近任务历史、玩家/地点工作集与共享基线的内存所有权及 self-guard 状态已迁移，Agent 目标、领地配置/上下文/具体效果及玩家/地点/任务历史持久化组合和四表 commit 待迁移）
+2. `ChatRuntime`（订阅句柄与 watchdog 所有权已迁移；配置协调、消息处理、去重、AI/固定回复和重连编排待迁移）
 3. `GuardRuntime`（配置 Store、任务队列、受伤订阅、timer、反击 session/命中衰减、告警/上一轮观察、战斗执行节流、告警冷却决策、reactive 阈值信号、Bot 重连/健康下降核心转场、昼夜/下雨兼容读取与转场判定，以及疑似攻击者选择/目标复核/持续反击 tick 决策已有独立边界；Agent 事件发布、完整 tick、真实伤害来源判定、Adapter 世界环境快照与追击/攻击业务待迁移）
 4. `MovementRuntime`
 5. `AgentCoordinator`

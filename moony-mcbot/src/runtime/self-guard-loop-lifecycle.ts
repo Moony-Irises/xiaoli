@@ -1,12 +1,7 @@
-export interface IntervalScheduler<THandle> {
-  setInterval(callback: () => void, delayMs: number): THandle;
-  clearInterval(handle: THandle): void;
-}
+import type { IntervalScheduler } from "./interval-scheduler.js";
 
-export const systemIntervalScheduler: IntervalScheduler<ReturnType<typeof setInterval>> = {
-  setInterval: (callback, delayMs) => setInterval(callback, delayMs),
-  clearInterval: (handle) => clearInterval(handle)
-};
+export type { IntervalScheduler } from "./interval-scheduler.js";
+export { systemIntervalScheduler } from "./interval-scheduler.js";
 
 function validateIntervalMs(intervalMs: number): void {
   if (!Number.isFinite(intervalMs) || intervalMs <= 0) {

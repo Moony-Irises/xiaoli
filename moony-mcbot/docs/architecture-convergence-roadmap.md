@@ -43,22 +43,40 @@
 - 逐步删除 `action-tools.ts` 中与黑板重复的任务队列、目标和事件状态。
 - 将 `ClientAdapter` 基础接口与 Mineflayer 原生对象解耦；当前原生句柄已从接口移除，Agent 紧凑状态摘要、salient 玩家/实体感知、就近白名单汇报、地点记忆、确定性 follow/place 目标激活、`follow_owner` 空闲策略、self-guard 周期状态、受伤后的最近疑似攻击者选择和后续反击目标复核已改读 Adapter 快照。`BotRuntime` 的连接、连接失败清理、手动断开和进程退出也已统一经过 Adapter，异步断开具备并发幂等、事件解绑和有界超时；仅保留 BotRuntime 的兼容原生句柄出口供其余高层调用迁移。
 - 由 Adapter Factory 创建具体适配器；当前已增加 `ClientAdapterFactory` 对象契约，`BotRuntime` / `BotRegistry` 可由应用组合层注入 kind 与 Factory，默认仍创建 `MineflayerAdapter`，并拒绝 Factory 返回错误 kind。该选择尚未进入 Bot 配置、环境变量或持久化，Modded Client 的公开配置等待 bridge 实现后接入。
-- 统一 Command Invocation / Action Result 已完成 `move.stopFollow` 首个试点：MCP、Web 和 Agent 共用 canonical 输入复核与领域 handler，保留各自旧返回契约，并在 Web 显示跨入口来源、requestId、耗时和 `executed` / `failed` 历史。其他动作、统一权限和游戏确认仍未迁移，详见 [Command Invocation / Action Result 试点设计](command-invocation-design.md)。
+- 统一 Command Invocation / Action Result 已完成 `move.stopFollow`、`interact.eat`、`inventory.holdByCategory` 与 `interact.openDoor` 四个试点：MCP、Web 和 Agent 共用 canonical 输入复核与领域 handler，保留各自旧返回契约，并在 Web 显示跨入口来源、requestId、耗时和 `executed` / `failed` 历史。四个命令的 schema、输出守卫、注册和 typed invocation 已归入独立 `ActionCommandSet`，`action-tools.ts` 只负责组合与 follow 回调注入。其余动作、统一权限和游戏确认仍未迁移，详见 [Command Invocation / Action Result 试点设计](command-invocation-design.md)。
+- 跟随 session 的 interval、session 元数据和 movement subscription 已由 `FollowSessionLifecycle` 统一拥有；普通停止与进程 shutdown 保留原清理顺序和异常边界。follow tick、任务结算、事件发布和失败聊天仍在 `action-tools.ts`，因此本项只完成资源生命周期收敛，不代表 FollowRuntime 已独立完成。
+- 定点移动的 interval 与 movement subscription 已由 `PositionMovementLifecycle` 统一拥有；`has` 和 `isCurrent` 保留旧 busy 判定与迟到结果门控语义，普通停止与进程 shutdown 仍按原清理顺序分阶段执行。安全路径决策、movement intent、任务结算、停止移动和 self-guard 副作用仍在 `action-tools.ts`，因此本项只完成资源生命周期收敛，不代表 MovementRuntime 已独立完成。
+- 持续对决的 interval、session 元数据和 entity/movement subscription 已由 `DuelSessionLifecycle` 统一拥有；普通停止与进程 shutdown 保留原清理顺序和异常边界。目标选择、tick 决策调用、追击/攻击、movement intent、聊天和任务结算仍在 `action-tools.ts`，因此本项只完成资源生命周期收敛，不代表 DuelRuntime 已独立完成。
+- `movement.walk` 的每 Bot 停止 timeout 已由 `WalkTimerLifecycle` 统一拥有；Agent/MCP 两个入口仍按旧顺序显式停止旧 timer、停止当前移动、启动直接前进并登记新 timer，进程 shutdown 统一释放已登记句柄。生命周期不提供地形安全、不停止游戏移动，也不改变公开参数和返回文本。
+- Agent executor 的每 Bot interval 与串行 Promise tail 已由 `AgentExecutorLifecycle` 统一拥有；同 Bot tick 继续串行、不同 Bot 可并发，普通停止和 shutdown 只停止后续 tick，配置删除遗忘 tail 但不取消旧工作，persistence flush 继续等待调用时仍被跟踪的 Promise 快照。任务 timeout timer、executor tick 冷却门、planner 冷却时间戳判定、task progress 节流、战略生命周期去重、库存变化事件基线和空闲社交尝试冷却已归入 `HierarchicalAgentRuntime`，配置 `lastPlanAt` 只作为诊断镜像，不再由 `action-tools.ts` 直接判定 planner 冷却或持有这些协调 Map。
+- 社交与人格短期运行态已由 `SocialRuntimeStateStore` 按 Bot 统一拥有：最近互动、主动发言时间、短期回复上下文、心情和分场景台词冷却。`claimSceneLine()` 保留发送前占用、精确到期和时钟回退语义，输入/输出上下文均复制；这些状态不持久化、不进入共享 memory，聊天、self-guard、动态 AI 和具体发送仍由 `action-tools.ts` 编排。Store 虽提供 `clearBot()`，但在缺少统一 `BotRegistry.delete()` 清理钩子前不接入生产删除路径。
+- 聊天订阅资源与单例监听 watchdog 已由 `ChatListenerLifecycle` 统一拥有。按 Bot 的 Runtime 引用用于复用判定，普通停止保留先 unsubscribe 后删除、失败时保留登记的旧语义，shutdown 继续逐 Bot 隔离错误。配置、消息处理器、去重、重连协调和具体聊天行为仍在 `action-tools.ts`，因此这不是完整 ChatRuntime 迁移。
+- 旧采矿执行链的每 Bot 串行 Promise tail 已由 `MiningTaskQueue` 统一拥有。同 Bot 串行、跨 Bot 并发、失败隔离、原结果/异常回传、完成 tail 留存和 shutdown 单次快照等待均保持旧行为；四条采矿业务链仍在 `action-tools.ts`，不提供取消、代次失效或动态 drain，也不代表批量采矿已经迁入 Adapter。
+- follow、定点移动、决斗、聊天攻击和采矿共用的当前 movement correlation key 已由 `MovementIntentStore` 统一拥有；旧 key 格式、覆盖和删除时机不变，调用层继续负责动作、事件过滤与任务结算。该 key 只是本地迟到结果门控，不是 Pathfinder goal、Adapter 状态或服务器确认。
 - 建立唯一 Tool/Skill Catalog，同时供 MCP 注册、Agent allowlist、Web 标签和执行器使用；分阶段边界见 [Tool/Skill Catalog 收敛设计](tool-skill-catalog-design.md)。
-- 把 `action-tools.ts` 按领域拆成 movement、combat、inventory、social、memory、agent、territory 等服务；当前已先迁移低风险 adapter-backed 调用，并抽出容器物品序列化、汇总、匹配和读取回退的纯 runtime 边界。完整 Agent 状态仍在该文件组装，但内部消费者已统一使用构建函数推导出的唯一快照类型，planner 的不可信输入投影边界保持独立。开箱、寻路、deposit/withdraw 与关闭仍是 Mineflayer 专用会话，等待独立 ContainerSession/Adapter 设计后再迁移。
+- 把 `action-tools.ts` 按领域拆成 movement、combat、inventory、social、memory、agent、territory 等服务；当前已先迁移低风险 adapter-backed 调用，抽出四个 canonical 命令定义，并抽出容器物品序列化、汇总、匹配和读取回退的纯 runtime 边界。完整 Agent 状态仍在该文件组装，但内部消费者已统一使用构建函数推导出的唯一快照类型，planner 的不可信输入投影边界保持独立。开箱、寻路、deposit/withdraw 与关闭仍是 Mineflayer 专用会话，等待独立 ContainerSession/Adapter 设计后再迁移。
 
 ### P2：提高可观察性与长期维护能力
 
-- CommandDispatcher 已先为 `move.stopFollow` 建立 `executed` / `failed` 终态和有界历史；后续仍需把“已接受、已确认、取消”及游戏事件证据接入统一事件流，不能把 handler 返回当成确认。
+- CommandDispatcher 已为 `move.stopFollow`、`interact.eat`、`inventory.holdByCategory` 与 `interact.openDoor` 建立 `executed` / `failed` 终态和有界历史，`ActionCommandSet` 负责这四个命令的具体定义与 typed invocation；后续仍需把“已接受、已确认、取消”及游戏事件证据接入统一事件流，不能把 handler 返回当成确认。
 - Command History 与 Web Action History 已共用递归 diagnostics 投影：写入内存历史的 payload、result 和 error 会深拷贝并脱敏常见敏感键、赋值文本与 Bearer 凭据，入口原响应不变。该规则不能识别普通字段里的任意秘密，真实凭据仍不得进入调试请求。
-- 配置、聊天记忆与共享游戏记忆的原子写入和退出 flush 第一阶段已完成：`chat-configs.json` 的读取、Zod 解析、串行写队列与动态 flush 已收口到独立 ConfigRepository，聊天监听、Chat AI、Agent 核心配置和 self-guard 配置的默认构造、运行时 Map、replace/delete 与持久化投影也已迁入各自 ConfigStore；Chat AI 与 planner 当前请求的 `AbortController`、请求代次和诊断写入门控已收口到 `AiRequestLifecycle`，热重载后的结果按 botId 回写当前 Store；Chat AI 与 self-guard 排队 tail、配置代次失效和动态 drain 由各自 `InvalidatableTaskQueue` 实例拥有，self-guard 原生受伤 handler 由独立订阅 registry 管理并动态读取当前配置，主/持续反击 interval 与 watchdog 句柄由 `SelfGuardLoopLifecycle` 管理，反击 session 与命中衰减由 `RetaliationStateStore` 管理，告警冷却与上一轮观察由 `SelfGuardRuntimeStateStore` 管理，旧编排层共享的装备节流与反击命中序号由 `CombatExecutionStateStore` 管理，昼夜/下雨兼容读取与场景转场由纯 `self-guard-environment` 边界管理，最近疑似攻击者选择、后续目标快照复核和持续反击 tick 条件由纯 `self-guard-retaliation` 边界判定。它与 `chat-summary-state.json`、`players.json`、`places.json` 复用同一个同目录临时文件、文件同步和 rename writer，失败路径清理临时文件。Agent 的目标/记忆/任务历史/领地组合、planner 冷却/执行、self-guard 完整 tick/攻击业务和四表 commit 仍在旧编排层；环境输入仍来自原生 Mineflayer Bot，尚未进入 Adapter 世界快照，真实伤害来源判定与追击/攻击动作也仍是旧实现。共享游戏快照仍由上层队列保证写入顺序。`SIGINT` / `SIGTERM` 会先静默动作 runtime，再断开 bot、等待持久化并关闭 MCP。聊天摘要已升级到按 Bot 隔离的 `version: 2`；共享游戏文件保持 `version: 1`，`chat-configs.json` 顶层版本仍需确认兼容策略后单独加入，详见 [持久化与退出生命周期设计](persistence-lifecycle-design.md)。
+- 配置、聊天记忆与共享游戏记忆的原子写入和退出 flush 第一阶段已完成：`chat-configs.json` 的读取、Zod 解析、串行写队列与动态 flush 已收口到独立 ConfigRepository，聊天监听、Chat AI、Agent 核心配置和 self-guard 配置的默认构造、运行时 Map、replace/delete 与持久化投影也已迁入各自 ConfigStore，实际聊天订阅与监听 watchdog 由 `ChatListenerLifecycle` 管理；Chat AI 与 planner 当前请求的 `AbortController`、请求代次和诊断写入门控已收口到 `AiRequestLifecycle`，热重载后的结果按 botId 回写当前 Store；Chat AI 与 self-guard 排队 tail、配置代次失效和动态 drain 由各自 `InvalidatableTaskQueue` 实例拥有，Agent executor interval 与串行运行 tail 则由 `AgentExecutorLifecycle` 按旧的不可取消、单次快照 flush 语义管理，planner 冷却时间戳判定由 `HierarchicalAgentRuntime` 管理；self-guard 原生受伤 handler 由独立订阅 registry 管理并动态读取当前配置，主/持续反击 interval 与 watchdog 句柄由 `SelfGuardLoopLifecycle` 管理，反击 session 与命中衰减由 `RetaliationStateStore` 管理，告警冷却与上一轮观察由 `SelfGuardRuntimeStateStore` 管理，旧编排层共享的装备节流与反击命中序号由 `CombatExecutionStateStore` 管理，昼夜/下雨兼容读取与场景转场由纯 `self-guard-environment` 边界管理，最近疑似攻击者选择、后续目标快照复核和持续反击 tick 条件由纯 `self-guard-retaliation` 边界判定。它与 `chat-summary-state.json`、`players.json`、`places.json` 复用同一个同目录临时文件、文件同步和 rename writer，失败路径清理临时文件。Agent 的目标/记忆/任务历史/领地组合、planner 轮次编排/执行、self-guard 完整 tick/攻击业务和四表 commit 仍在旧编排层；环境输入仍来自原生 Mineflayer Bot，尚未进入 Adapter 世界快照，真实伤害来源判定与追击/攻击动作也仍是旧实现。共享游戏快照仍由上层队列保证写入顺序。`SIGINT` / `SIGTERM` 会先静默动作 runtime，再断开 bot、等待持久化并关闭 MCP。聊天摘要已升级到按 Bot 隔离的 `version: 2`；共享游戏文件保持 `version: 1`，`chat-configs.json` 顶层版本仍需确认兼容策略后单独加入，详见 [持久化与退出生命周期设计](persistence-lifecycle-design.md)。
+- `MiningTaskQueue` 以纯进程内状态持有旧采矿任务 tail；退出 flush 读取一次已登记任务快照，不会把快照之后追加的采矿任务动态纳入本轮等待。
 - Self-guard 主 tick 的 Bot 引用变化和严格超过 `0.5` 的健康下降条件也已委托给纯 `self-guard-state` 决策；首次采样、vitals 不可用和非有限历史值均 fail-closed。重连短句、受伤处理和上一轮状态写入仍由旧编排层按原顺序执行。
+- 2026-08-14 补充：planner 冷却的时间戳同步、剩余时间和到期判定已由 `HierarchicalAgentRuntime` 负责；`AgentConfigStore.lastPlanAt` 仍保留为诊断镜像。planner 轮次编排/执行、并发与取消语义仍在旧编排层。
+- 2026-08-20 补充：Agent 最近任务历史的内存所有权已由 `AgentTaskHistoryStore` 接管，按 Bot 隔离并统一负责输入/输出复制、最近 20 条上限、持久化快照替换、清空和删除。任务完成时机、持久化写入队列及 `memory.taskHistory` 组合仍由 `action-tools.ts` 负责；planner 轮次编排/执行和完整 Agent tick 没有随本项迁移。
+- 2026-08-20 补充：Agent task progress 的最近详情/时间节流状态已由 `HierarchicalAgentRuntime` 接管。只读判定、成功发布后的时间记录和按任务/配置删除清理均有 runtime 回归；`action-tools.ts` 仍负责生成并发布 `task_progress` 事件，事件 payload、1200ms 边界、任务切换和时钟回退语义保持不变。
+- 2026-08-20 补充：Agent 战略生命周期的普通提示去重和完成/放弃汇报去重已由 `HierarchicalAgentRuntime` 分别接管。普通提示继续在生成指令前立即占用事件，汇报继续只在聊天成功后记账，两类事件 ID 相互独立；`action-tools.ts` 仍拥有生命周期事件筛选、规划文本、目标选择、聊天和事件发布，公共行为不变。
+- 2026-08-20 补充：Agent `inventory_changed` 的上一份摘要基线已由 `HierarchicalAgentRuntime` 接管。首次观察只建立基线，摘要相同不报告，变化时先更新基线再由 `action-tools.ts` 发布原事件；普通 self-guard stop 不清理基线，Agent 配置删除才清理。摘要生成、Adapter 库存采集、事件 payload 和持久化边界不变。
+- 2026-08-20 补充：Agent `socialize_whitelist` 的最后尝试时间已由 `HierarchicalAgentRuntime` 接管。目标选择完成后仍在任务启动、实体复核和场景台词之前立即占用冷却，失败尝试不会回滚；精确冷却边界、时钟回退、普通 executor 停止/策略切换保留状态和 Agent 配置删除清理语义不变。候选评分、转头、任务生命周期与聊天仍由 `action-tools.ts` 编排。
+- 2026-08-20 补充：Agent 玩家/地点工作集与共享基线的内存所有权已由 `AgentGameMemoryStateStore` 接管，统一负责副本隔离、严格较新导入、跨 Bot 聚合、替换、删除和清空。输入归一化、时间戳生成、旧配置与共享文件持久化编排、territory 联动仍由 `action-tools.ts` 负责；`players.json` / `places.json` 的 `version: 1` 契约和 Voice 只读边界未改变。
+- 2026-08-20 补充：Agent 领地配置的内存所有权已由 `TerritoryConfigStore` 接管；`TerritoryRuntime` 现在内部组合玩家 presence、`TerritoryPresenceStore`、警告判定、active-key prune、状态写回与同步 hook 顺序。`action-tools.ts` 仍负责配置归一化、持久化投影、地点/快照采集，并注入聊天、Agent 事件和决斗 hooks；这些具体效果、planner 执行和公共事件证据尚未迁入统一领域边界，公共配置与游戏行为保持不变。
 - Self-guard 的低生命/低饥饿 reactive 转场、事件优先级/payload 和下一组去重 flags 已委托给同一纯状态边界。调用层仍按既有顺序发布 Agent 事件并在最后写 Store；事件 ID、时间戳和发布失败处理没有迁移。
 - Self-guard 聊天告警的启用开关、严格冷却边界与无效时间 fail-closed 已委托给纯状态边界。调用层仍先写冷却时间再尝试发送，聊天失败不会回滚；完整 tick 快照因会提前部分采集并改变异常路径而暂缓。
 - 未发布条目已有独立 TypeScript 契约校验器和 CI 门禁：文件名 scope、八个 frontmatter 字段、tests/artifacts 与三段正文会在 lint 前检查，9 个旧式文件名已规范化。校验不会移动文件或宣布发布；首次 release 批次和 TODO 历史归档仍需确认，详见 [Release Entry 生命周期](release-entry-lifecycle.md)。
 - OpenAI-compatible 请求传输层第一阶段已完成：planner、chat、memory 共用 endpoint 归一化、Bearer 鉴权、JSON POST 和超时边界；业务响应解析、错误前缀与模型 fallback 仍由各调用方维护，后续再评估是否抽取响应解析而不抹平提供商差异。
 - 云端 planner 上下文投影第一阶段已完成：默认只发送字段白名单、距离摘要、任务/目标状态和事件类型，不再发送完整状态、绝对坐标、实体/任务/事件 ID、任务 params、记忆 notes 或事件 payload；权限类别仍作为行为安全输入保留，详见 [Planner 上下文投影设计](planner-context-projection-design.md)。
-- ESLint 9 flat config 与按子目录触发的 GitHub CI 第一阶段已完成，统一执行 lint、源码/测试 typecheck、自动发现的完整测试和 build；`action-tools.ts` 已恢复未使用符号检查，只与少量 Mineflayer 原生兼容边界暂时豁免 `no-explicit-any`。MCP SDK 1.30.0 与 Yggdrasil 1.8.0 已分别完成精确锁定和离线协议/认证回归；Node 基线现已统一为 22+，CI 覆盖 22/24 LTS，Mineflayer 按当前已验证 lock 条目精确固定为 4.35.0。生产审计仍保留原 17 项，Yggdrasil 的嵌套 `uuid@10` 也仍被标记；Mineflayer 4.37.x 与真实登录/游戏行为回归继续单独处理，详见 [Lint 与 CI 设计](lint-ci-design.md)。
+- ESLint 9 flat config 与按子目录触发的 GitHub CI 第一阶段已完成，统一执行 lint、源码/测试 typecheck、自动发现的完整测试和 build；`action-tools.ts` 已恢复未使用符号检查，只与少量 Mineflayer 原生兼容边界暂时豁免 `no-explicit-any`。MCP SDK 1.30.0 与 Yggdrasil 1.8.0 已分别完成精确锁定和离线协议/认证回归；Node 基线现已统一为 22+，CI 覆盖 22/24 LTS，Mineflayer 按当前已验证 lock 条目精确固定为 4.35.0。2026-08-14 重新运行 `npm audit --omit=dev` 返回 0 项；Mineflayer 4.37.x 与真实登录/游戏行为回归继续单独处理，详见 [Lint 与 CI 设计](lint-ci-design.md)。
 
 ## 三、目标运行链
 
@@ -117,10 +135,11 @@ MCP 和 Web 都只调用 `Skill / Action Dispatcher`，不能各自实现一套�
 新增应用级初始化和关闭生命周期：
 
 - `RuntimeBootstrap`：加载配置、记忆、环境覆盖并启动 watchdog。当前已先把 `.env.local` 收敛为仅由 `main` 引用的显式 bootstrap，普通模块导入无加载副作用。
-- `ConfigRepository`：文件生命周期第一阶段已抽出，负责现有无版本 schema 的读取校验、串行原子写入和 flush；聊天监听、Chat AI、Agent 核心配置与 self-guard 运行时配置已迁入独立 Store，AI 当前请求的取消/失效与诊断代次、Chat AI/self-guard 排队任务代次与 drain、self-guard 受伤订阅、self-guard 主/持续反击 interval 与 watchdog 句柄、反击 session/命中衰减、告警冷却/上一轮观察、装备节流/反击命中序号所有权、reactive 阈值信号、Bot 重连/健康下降核心转场、昼夜/下雨兼容读取与转场判定，以及疑似攻击者选择、后续目标 Adapter 快照复核和持续反击 tick 决策也已迁入独立 runtime 边界。Agent 组合状态、planner 冷却/执行、self-guard 完整 tick/事件发布/追击与攻击业务、真实伤害来源判定、Adapter 环境快照及四表事务 commit 仍待后续迁移。
+- `ConfigRepository`：文件生命周期第一阶段已抽出，负责现有无版本 schema 的读取校验、串行原子写入和 flush；聊天监听、Chat AI、Agent 核心配置与 self-guard 运行时配置已迁入独立 Store，聊天订阅/watchdog、AI 当前请求的取消/失效与诊断代次、Chat AI/self-guard 排队任务代次与 drain、Agent executor interval/串行运行 tail、旧采矿串行 tail、Agent 最近任务历史、Agent 玩家/地点工作集与共享基线、领地 presence/警告协调、self-guard 受伤订阅、self-guard 主/持续反击 interval 与 watchdog 句柄、跟随 session/interval/subscription 生命周期、反击 session/命中衰减、告警冷却/上一轮观察、装备节流/反击命中序号所有权、reactive 阈值信号、Bot 重连/健康下降核心转场、昼夜/下雨兼容读取与转场判定，以及疑似攻击者选择、后续目标 Adapter 快照复核和持续反击 tick 决策也已迁入独立 runtime 边界。Agent 目标、领地配置/地点/具体效果及玩家/地点/任务历史的持久化组合，planner 轮次编排/执行、self-guard 完整 tick/事件发布/追击与攻击业务、跟随路径/任务编排、采矿业务编排、真实伤害来源判定、Adapter 环境快照及四表事务 commit 仍待后续迁移；planner 冷却时间戳判定已由 `HierarchicalAgentRuntime` 负责。
+- 2026-08-14 补充：`HierarchicalAgentRuntime` 已接管 planner 冷却时间戳判定；阶段 1 其余未迁移项仍是 planner 轮次编排/执行、Agent 组合状态和完整副作用编排。
 - `GuardRuntime`：聊天告警冷却、周期生命/饥饿、reactive 阈值信号与去重 flags、Bot 引用变化、健康下降容差、库存摘要和附近玩家首次进入条件已有纯 runtime 决策；附近玩家判定会排除自身、忽略无效距离并包含范围边界。Agent 事件发布、重连/受伤副作用、随机概率、场景聊天、上一轮状态写入和完整 tick 顺序仍由旧编排层负责。
 - `RuntimeShutdown`：停止循环、卸载监听器、断开 bot、等待写入队列。
-- `ActionDispatcher`：统一校验能力、执行动作、记录结果和发布事件。当前仅完成 `move.stopFollow` 的 CommandDispatcher 试点，权限和证据事件仍待扩展。
+- `ActionDispatcher`：统一校验能力、执行动作、记录结果和发布事件。当前完成 `move.stopFollow`、`interact.eat`、`inventory.holdByCategory` 与 `interact.openDoor` 四个 CommandDispatcher 试点，并把具体定义收敛到 `ActionCommandSet`；权限和证据事件仍待扩展。
 
 这一阶段不改变现有 MCP 工具名，先保持外部契约兼容。
 
@@ -129,12 +148,14 @@ MCP 和 Web 都只调用 `Skill / Action Dispatcher`，不能各自实现一套�
 迁移顺序：
 
 1. 让黑板接管 active task、goal、milestone 和 action queue；本轮已完成。
-2. 让旧 Agent 工具只读写黑板，不再直接维护重复 Map。
-3. 将 `StrategicAction -> SkillInvocation` 和执行结果事件接通。
-4. 让 planner 成为可注入的 Strategic Layer，而不是隐藏在工具文件里的特殊流程。
+2. 让旧 Agent 工具只读写黑板，不再直接维护重复 Map；任务 timeout timer、executor tick 冷却门、planner 冷却判定、最近任务历史、玩家/地点与共享基线状态、领地配置及 presence/警告协调已完成这一小步收口，战略目标、领地具体效果适配、planner 轮次编排/执行仍待迁移。
+3. 将 `StrategicAction -> SkillInvocation` 和执行结果事件接通；`HierarchicalAgentRuntime` 负责 Skill 编译、绑定和 active 状态，执行层发布 `task_finished` / `task_failed`，离线接线回归已覆盖该链路。
+4. 让 planner 成为可注入的 Strategic Layer。请求构造、上下文投影和响应解析已迁入 `OpenAiAgentPlanner`，单次请求生命周期已迁入 `planner-request-runner.ts`，计划到 `StrategicDirective` 的纯翻译已迁入 `plan-to-directive.ts`；调用层通过内部 `AgentPlanRequester` 组合，传输、请求生命周期和翻译均可独立离线测试。生产仍使用固定默认实现，完整轮次协调和已有 `StrategicPlanner` 的生产接线尚未迁移。[生产注入提案](strategic-planner-injection-design.md) 已列出完整决策返回、单次应用、兼容规则和取消后的执行门控，待确认；请求交错回归目前只证明诊断隔离，不能证明迟到计划不会执行。
 5. 删除旧 executor queue 和同步桥，保留兼容查询字段一段时间。
 
 完成标志是 `agent.framework.status`、`agent.trace.summary` 和实际执行状态来自同一份黑板数据。
+
+当前离线规划回归已覆盖 MCP 请求、冷却、错误诊断，以及黑板 → Skill → CommandDispatcher → 模拟 Adapter。调试出口已增加有界的可观察事件视图：`agent.framework.status.snapshot.executionEvents`、`agent.events.tail`、`agent.trace.summary` 和 Web 状态使用同一组最近 20 条记录，因此 planner 请求/结果和 Skill 完成事件可以从同一处核对。黑板 `recentEvents` 仍是 Reactive 和 planner 内部使用的规范化输入流，`tick` / `perception_updated` 不进入可观察视图；这两个视图的职责差异是有意保留的。
 
 ### 阶段 3：Adapter conformance
 

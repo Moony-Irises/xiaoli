@@ -16,6 +16,7 @@ import {
   debugEatFood,
   debugEnableChatAi,
   debugEnableHiReply,
+  debugHoldItemByCategory,
   debugOpenDoor,
   debugReloadPromptProfile,
   debugRewindStrategicGoal,
@@ -1781,12 +1782,9 @@ export function startDebugWebServer(registry: BotRegistry): http.Server | null {
               if (!["sword", "axe", "pickaxe", "food"].includes(category)) {
                 throw new Error("category must be one of: sword, axe, pickaxe, food");
               }
-              result = {
-                action: "hold-category",
-                result: await registry.get(botId).holdItemByCategory({
-                  category: category as "sword" | "axe" | "pickaxe" | "food"
-                })
-              };
+              result = await debugHoldItemByCategory(botId, registry, {
+                category: category as "sword" | "axe" | "pickaxe" | "food"
+              });
               break;
             }
             case "right-click":

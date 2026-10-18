@@ -13,6 +13,8 @@
 ## 游戏记忆
 
 - `game-memory-store.ts` 管理共享 `players.json` 与 `places.json`。
+- `agent-game-memory-state-store.ts` 管理 Agent 按 Bot 隔离的玩家/地点工作集和共享基线；输入、查询与聚合快照都会复制记录，并统一处理替换、严格较新合并、删除和清空语义。
+- `AgentGameMemoryStateStore` 不读取环境变量、不操作文件，也不持有 Bot、ConfigStore、持久化队列或 territory；输入归一化与时间戳生成仍由调用层负责。
 - 两个完整 JSON 文档都复用 `writeJsonAtomic`：先在内存序列化，再以同目录排他临时文件写入、同步、关闭和 rename；替换失败会清理临时文件。
 - `SharedGameMemoryStore` 不负责同一目标文件的业务写入顺序；McBot 的双写调用由 `action-tools` 持久化队列串行化，退出时等待该队列 drain。
 - 文件路径、`version: 1` schema、归一化和按 `updatedAt` 合并规则保持不变。详细跨模块边界见 [共享记忆计划](../../docs/shared-memory-plan.md)。

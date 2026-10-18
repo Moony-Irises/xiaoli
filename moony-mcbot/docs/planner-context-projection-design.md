@@ -2,7 +2,7 @@
 
 ## 1. 背景
 
-当前 `requestAgentPlan()` 同时发送精简观察、记忆摘要和完整 `agent.stateSnapshot`。完整快照包含绝对坐标、实体 ID、玩家关系资料、地点 notes、任务参数和内部事件 payload。它适合本地 Web/MCP 调试，但不应默认进入任意 OpenAI-compatible 云端服务。
+实施上下文投影之前，旧 `requestAgentPlan()` 同时发送精简观察、记忆摘要和完整 `agent.stateSnapshot`。完整快照包含绝对坐标、实体 ID、玩家关系资料、地点 notes、任务参数和内部事件 payload。它适合本地 Web/MCP 调试，但不应默认进入任意 OpenAI-compatible 云端服务。当前请求已应用本设计的白名单投影，并迁入第 9 节的独立组件。
 
 本设计只收窄云端 planner 输入，不修改 `agent.stateSnapshot`、Web 调试面板、MCP 返回结构或本地 Agent 黑板。[OpenAI 官方数据控制文档](https://platform.openai.com/docs/models/default-usage-policies-by-endpoint)说明 API 请求内容可能进入滥用监控日志，因此项目应在发送前执行数据最小化，而不是依赖具体提供商的保留策略。
 
@@ -91,13 +91,13 @@ buildAgentStateSnapshot()        本地完整快照
 buildPlannerContextProjection()  字段白名单 + 数量上限
           |
           v
-requestAgentPlan()               单个“规划上下文 JSON”消息
+OpenAiAgentPlanner.plan()               单个“规划上下文 JSON”消息
           |
           v
 OpenAI-compatible transport
 ```
 
-`requestAgentPlan()` 不再附加“完整状态 JSON”消息，也不能在投影失败时回退发送完整快照。投影函数应对缺失或类型错误字段使用 `null`、空对象或空数组，避免异常数据扩大外发范围。
+`OpenAiAgentPlanner.plan()` 不再附加“完整状态 JSON”消息，也不能在投影失败时回退发送完整快照。投影函数应对缺失或类型错误字段使用 `null`、空对象或空数组，避免异常数据扩大外发范围。
 
 ## 7. 测试与验收
 
@@ -109,7 +109,7 @@ OpenAI-compatible transport
 4. 任务 params 与事件 payload 使用白名单，未知键默认丢弃。
 5. 玩家、实体、事件和记忆列表有固定上限。
 6. 缺失、数组类型错误和非有限数值不会抛错或产生 `NaN` / `Infinity`。
-7. `requestAgentPlan()` 请求体不再包含“完整状态 JSON”。
+7. `OpenAiAgentPlanner.plan()` 请求体不再包含“完整状态 JSON”。
 
 完成后运行定向测试、`npm test`、`npm run typecheck`、`npm run build` 和 `git diff --check`。真实游戏只需回归 planner 能继续生成跟随、停止、进食和采矿计划；投影本身可离线验收。
 
@@ -119,3 +119,27 @@ OpenAI-compatible transport
 - 本地确定性地点移动继续使用完整本地记忆，不受云端投影影响。
 - 若某个规划场景确实需要新字段，应先新增显式字段、测试和文档，而不是恢复完整快照。
 - 不提供“发送完整状态”环境开关，避免隐私边界因临时调试长期失效。
+
+## 9. 独立请求组件
+
+请求实现现在位于 `src/agent/openai-agent-planner.ts`，旧 `action-tools.ts` 通过内部 `AgentPlanRequester` 调用：
+
+```ts
+interface AgentPlanRequester {
+  plan(request: AgentPlanRequest): Promise<AgentPlan>;
+}
+```
+
+`AgentPlanRequest` 包含窄配置（模型、地址、密钥、系统提示和允许工具）、用户指令、本地完整快照、已解析超时和可选 `AbortSignal`。组件在调用传输前完成上述白名单投影，不会把完整快照放入 HTTP body；密钥仍仅用于原有传输鉴权。
+
+默认 `OpenAiAgentPlanner` 不读取环境变量、不持有请求生命周期或黑板，不自己重试、创建任务或执行工具。构造器允许注入与现有 `postOpenAiChatCompletions` 同签名的传输函数，调用层则负责配置、冷却、诊断、取消和计划翻译。
+
+`AgentPlan` 保留原模型输出结构与第一个 choice 解析规则。它尚不是正式 `StrategicDirective`；返回成功仅表示模型回复已解析，后续权限检查、命令执行及游戏确认是各自独立阶段。这个边界没有改变 MCP/Web schema 或现有 `StrategicPlanner` 契约。
+
+离线验证：
+
+```powershell
+npm test -- test/openai-agent-planner.test.ts test/agent-planner-integration.test.ts test/planner-context-projection.test.ts
+```
+
+真实服务器补充步骤统一放在 [手动测试指南第 9.1 节](manual-testing-guide.md#91-规划请求拆分回归待你方便时测)，继续等待用户方便时执行。

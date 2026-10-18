@@ -5,9 +5,14 @@ import path from "node:path";
 import test from "node:test";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { parsePersistedChatState } from "../src/config/persisted-chat-config.js";
+import type { TerritoryConfig } from "../src/config/territory-config-store.js";
 import { BotRegistry } from "../src/runtime/bot-registry.js";
 
-function createPersistedState(owner = "Judy"): Record<string, unknown> {
+function createPersistedState(
+  owner = "Judy",
+  territoryRadius = 12,
+  territoryPlaceIds: readonly string[] = ["home"]
+): Record<string, unknown> {
   return {
     chatByBotId: {
       "bot-a": {
@@ -88,9 +93,9 @@ function createPersistedState(owner = "Judy"): Record<string, unknown> {
         },
         territory: {
           enabled: true,
-          placeIds: ["home"],
+          placeIds: [...territoryPlaceIds],
           requiredTags: ["trusted"],
-          radius: 12,
+          radius: territoryRadius,
           warningCooldownMs: 30000,
           warningMessage: "走开。",
           ownerPresencePolicy: "owner_nearby_only",
@@ -176,13 +181,43 @@ test("reloadPersistedChatState commits only validated snapshots and deletes abse
     assert.deepEqual(first.removedCounts, { chatCount: 0, aiCount: 0, agentCount: 0, guardCount: 0 });
     assert.equal(actionTools.getChatAiStatusForDebug("bot-a").hasApiKey, true);
     assert.equal(actionTools.getAgentStatusForDebug("bot-a").hasPlannerApiKey, true);
+    const firstMemory = actionTools.getAgentMemoryStatusForDebug("bot-a");
+    assert.deepEqual(
+      (firstMemory.playerProfiles as Array<{ playerName: string }>).map((entry) => entry.playerName),
+      ["Judy"]
+    );
+    assert.deepEqual(
+      (firstMemory.places as Array<{ placeId: string }>).map((entry) => entry.placeId),
+      ["home"]
+    );
+    assert.deepEqual(
+      (firstMemory.taskHistory as Array<{ id: string }>).map((entry) => entry.id),
+      ["task-1"]
+    );
+    assert.deepEqual(
+      actionTools.getTerritoryStatusForDebug("bot-a").territory,
+      {
+        enabled: true,
+        placeIds: ["home"],
+        requiredTags: ["trusted"],
+        radius: 12,
+        warningCooldownMs: 30_000,
+        warningMessage: "走开。",
+        ownerPresencePolicy: "owner_nearby_only",
+        escalationEnabled: true,
+        escalationDelayMs: 8_000
+      } satisfies TerritoryConfig
+    );
 
     delete process.env.MCBOT_AI_API_KEY;
-    await writeFile(configPath, JSON.stringify(createPersistedState("Molly")), "utf8");
+    await writeFile(configPath, JSON.stringify(createPersistedState("Molly", 24, ["home", "gate"])), "utf8");
     await actionTools.reloadPersistedChatState(registry);
     assert.equal(actionTools.getAgentStatusForDebug("bot-a").owner, "Molly");
     assert.equal(actionTools.getChatAiStatusForDebug("bot-a").hasApiKey, true);
     assert.equal(actionTools.getAgentStatusForDebug("bot-a").hasPlannerApiKey, true);
+    const replacedTerritory = actionTools.getTerritoryStatusForDebug("bot-a").territory as TerritoryConfig;
+    assert.equal(replacedTerritory.radius, 24);
+    assert.deepEqual(replacedTerritory.placeIds, ["home", "gate"]);
 
     await writeFile(configPath, '{"agentByBotId":{"bot-a":{"owner":42}}}', "utf8");
     await assert.rejects(actionTools.reloadPersistedChatState(registry), /agentByBotId\.bot-a\.owner/);
@@ -234,10 +269,18 @@ test("reloadPersistedChatState commits only validated snapshots and deletes abse
     assert.equal(actionTools.getChatAiStatusForDebug("bot-a").hasApiKey, false);
     assert.equal(actionTools.getAgentStatusForDebug("bot-a").owner, "");
     assert.deepEqual(actionTools.getAgentMemoryStatusForDebug("bot-a").playerProfiles, []);
-    assert.equal(
-      (actionTools.getTerritoryStatusForDebug("bot-a").territory as { enabled: boolean }).enabled,
-      false
-    );
+    assert.deepEqual(actionTools.getAgentMemoryStatusForDebug("bot-a").places, []);
+    assert.deepEqual(actionTools.getTerritoryStatusForDebug("bot-a").territory, {
+      enabled: false,
+      placeIds: [],
+      requiredTags: [],
+      radius: 12,
+      warningCooldownMs: 30_000,
+      warningMessage: "走开。",
+      ownerPresencePolicy: "owner_nearby_only",
+      escalationEnabled: true,
+      escalationDelayMs: 8_000
+    } satisfies TerritoryConfig);
     await startupServer.close();
   } finally {
     for (const [name, value] of previousEnv.entries()) {

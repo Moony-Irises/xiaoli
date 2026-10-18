@@ -1,5 +1,62 @@
 # TODO
 
+## 当前任务：Strategic Layer 注入设计与迁移前回归
+
+- [x] 阅读分层框架、现有 StrategicPlanner、生产规划轮次及请求生命周期，确认输入/输出不匹配和重复应用风险
+- [x] 关键词：StrategicPlanner、规划决策信封、请求代次、AbortSignal、冷却、黑板单写入；沿用现有依赖，Notion CLI 不可用，业务契约以本地代码/测试为准
+- [x] 补迁移前请求回归：超时/普通失败、实际取消、失效后的迟到完成、新旧请求交错及多 Bot 隔离；请求与生命周期定向测试 12/12、测试类型检查通过
+- [x] 将接口提案、调用顺序、兼容边界和验收标准写入 `docs/strategic-planner-injection-design.md`，关联路线图和测试入口
+- [x] 验证完整离线门禁：Lint、源码/测试类型检查、511/511 测试、build、234 条 release 校验、274 个 Markdown 文件链接和 diff 自审全部通过；504 个候选上传文件未发现高置信密钥或本地密钥原值匹配，真实配置/记忆未纳入
+- [x] 将已完成的运行态/规划边界积压改动和本轮成果统一提交、推送 GitHub，核对本地与远端 main 提交一致；实际提交号以 Git 为准
+- [ ] 待用户确认复杂接口方案后，实施生产规划策略注入与完整轮次协调；本轮不修改共享接口
+- [ ] 已确认风险：requester 忽略取消时，现有 runner 仍返回迟到计划，生命周期代次只门控诊断；整轮执行前仍缺有效性复核。由协调器迁移解决，不在基线测试阶段静默改取消契约
+- [ ] 既有兼容限制：混合计划先应用指令再检查剩余工具权限；迁移先保留并补基线，若要整轮原子授权需单独确认行为变更
+
+## 当前任务：Agent 单次规划请求生命周期边界
+
+- [x] 阅读 planner 请求、AiRequestLifecycle、计划翻译和现有接线，确认只抽离单次请求边界，不改变轮次编排
+- [x] 关键词：Agent planner request、AbortSignal、诊断终态、请求代次、Node 测试；不新增依赖，沿用现有 TypeScript/Node 测试栈
+- [x] 将请求输入、Signal、成功/失败状态写回和 handle 关闭迁入 `src/agent/planner-request-runner.ts`
+- [x] 接回 MCP/Web/战略 pass 共用的 planner 请求调用路径，保留错误分类、取消和外部返回语义
+- [x] 补成功、取消失败、输入转发和生命周期清理测试
+- [x] 同步 Agent/Runtime/Test README、路线图、手动测试指南、根 README、CLAUDE 与 changeset
+- [x] 完成定向测试、Lint、源码/测试 typecheck、506/506 完整测试、build、233 条 release 校验和 diff 自审
+- [ ] 完整 StrategicPlanner 生产注入、整轮协调和真实游戏回归仍待后续阶段
+
+## 当前任务：Agent 计划到指令翻译边界
+
+- [x] 阅读路线图、Agent 规划请求、旧步骤翻译、Skill 与 MCP 接线，确认先拆无执行副作用的计划翻译器
+- [x] 关键词：Agent plan、StrategicDirective、旧工具步骤兼容、动作上限、Node 子测试；不新增依赖。未找到 Notion CLI/连接；Context7 文档入口明确排除业务重构，测试生命周期参考 Node 官方文档
+- [x] 在旧实现上补 MCP 行为基线：显式指令优先、动作截断、旧步骤/未翻译步骤共存、无可执行动作及权限拒绝
+- [x] 将动作种类过滤、旧步骤归一化和指令构造迁入 Agent 模块，调用层保留冷却、诊断、权限、目标与执行编排
+- [x] 补翻译单元测试：有效映射、缺参数、空计划、动作上限、优先级/样式/顺序与兼容回退
+- [x] 同步 Agent/Test README、路线图、手动测试指南、根 README、CLAUDE 与 changeset；真实游戏手测继续搁置
+- [x] 完成定向测试、lint、源码/测试 typecheck、完整测试、build、release 校验和 diff 自审
+
+## 当前任务：Agent 调试事件视图收口
+
+- [x] 阅读黑板、Runtime、规划接线、事件查询与测试指南，确认问题是两条事件流的调试可见性差异
+- [x] 关键词：Agent blackboard、事件顺序、规划诊断、执行证据、MCP 回归；沿用现有 TypeScript/Node 测试栈，不新增依赖，知识入口可用性沿用上一轮检查
+- [x] 确认边界：调试沿用事件字段、最近 20 条、type/count 过滤；内部 reactive、生命周期判断、planner 上下文和低优先级限流仍读原始流
+- [x] 补充刷新噪声、跨流顺序、时钟回退、按 ID 去重、容量和 Bot 隔离的回归
+- [x] 黑板保存有界可观察事件；Runtime 调试快照和 MCP/Web 事件出口统一读取，排除内部 tick/感知刷新
+- [x] 验证规划成功、失败、Skill 执行结果在 framework/tail/trace/Web 状态中一致可见，且 planner 原输入不变
+- [x] 同步 Agent/Test README、根 README、路线图、手动测试指南、CLAUDE 与 changeset
+- [x] 完成定向回归（21/21）、lint、源码/测试 typecheck、全量测试（496/496）、build、release 校验（231 条）、文档链接（269 个 Markdown 文件）、高置信敏感信息扫描和 diff 自审；真实游戏手测依用户要求继续搁置
+
+## 当前任务：独立 Agent 规划请求边界
+
+- [x] 阅读架构路线图、Agent/Runtime README、上下文投影与请求生命周期代码，确认沿既有 Strategic Layer 收敛计划推进
+- [x] 关键词：Agent planner、上下文投影、可替换规划器、OpenAI-compatible transport、黑板事件；不新增依赖或外部 API。未发现 Notion 连接；Context7 查询返回 API key 认证错误，改查 Node.js 官方测试文档，并以仓库实现与离线测试为兼容依据
+- [x] 验证现有 executor 接线、上下文投影与模型传输基线（7/7）
+- [x] 先补现有 MCP 规划请求的离线接线回归，覆盖成功、冷却、错误诊断以及黑板 → Skill → Dispatcher → 模拟 Adapter（4/4）
+- [x] 将请求构造、上下文投影、响应解析迁入 `OpenAiAgentPlanner`，以内部 `AgentPlanRequester` 接口组合，并允许注入传输函数进行测试
+- [x] 保持 MCP/Web、配置、提示词、响应文本、权限、冷却和取消语义；不改完整 tick、directive 翻译或游戏能力
+- [x] 分单元验证请求体、文本兼容、HTTP/空回复/解析失败和 AbortSignal 传递（请求单元与接线 13/13，相邻回归 44/44）
+- [x] 同步 Agent/Runtime/Test README、架构路线图、上下文设计、手动测试指南第 9.1 节、根 README、CLAUDE 与 changeset
+- [x] 完成 lint、源码/测试 typecheck、全量测试（493/493）、build、release 校验（230 条）、文档链接（268 个 Markdown 文件）、diff 自审及新文件高置信敏感信息/冲突标记检查；共享响应函数与 planner 提示/错误字面量对比一致，游戏联调继续搁置
+- [x] 遗留问题已收口：Runtime 保留 `recentEvents` 作为内部规范化输入，同时维护最多 20 条有界可观察事件；framework/tail/trace/Web 调试出口读取同一视图，原始 execution stream 继续供行为判断和限流使用
+
 ## 下一阶段：架构稳定化与收敛
 
 详细设计与验收标准见：[架构收敛与后续路线图](docs/architecture-convergence-roadmap.md)。
@@ -47,6 +104,7 @@
 - [x] 抽出 follow 的丢失/超范围/追击/保持距离纯决策，并补边界测试
 - [x] 将 follow tick 的 pathfinder/control-state 操作替换为稳定玩家实体 ID 的 Adapter 追击
 - [x] 保留目标丢失转头、静止超时和垂直跳跃降级行为，并补手动回归说明
+- [x] 将 follow、定点移动、决斗、聊天攻击和采矿共用的当前 movement correlation key 迁入独立 Store
 - [ ] 后续拆分 orchestration capability 与 ClientAdapter capability；当前 `follow_player` / `stop_follow` 仅用于上层能力门控，没有同名 Adapter 方法
 - [x] 修复 `ensureIronSwordInHotbar1AndHold` 仍按旧回调形式调用 Promise 式 `moveSlotItem` 的历史问题，并补准备战斗回归测试
 - [x] 抽出 Promise 式 Mineflayer 槽位移动适配函数，覆盖同槽空操作、成功和拒绝传播
@@ -66,8 +124,8 @@
 - [x] 为云端 planner 增加上下文投影，减少重复 token 和敏感运行时信息外发
 - [x] 增加 Adapter conformance tests、连接生命周期测试、聊天去重测试和动作证据测试
 - [x] 增加 ESLint 与 GitHub CI 基线，统一执行 lint、typecheck、完整测试和 build
-- [ ] MCP SDK 1.30.0、Yggdrasil 1.8.0、Node 22+ 基线与 Mineflayer 4.35.0 精确锁定已完成离线回归；生产审计仍为 17 项，继续处理真实认证和 Mineflayer 4.37.x 评估
-- [ ] 将 README 中 8 个 `/c:/xiaoli/...` 机器绝对链接改为仓库相对链接，恢复跨机器文档可移植性
+- [ ] MCP SDK 1.30.0、Yggdrasil 1.8.0、Node 22+ 基线与 Mineflayer 4.35.0 精确锁定已完成离线回归；截至 2026-08-14 当前 `npm audit --omit=dev` 返回 0 项，仍需处理真实认证和 Mineflayer 4.37.x 评估
+- [x] 将 README 中 8 个 `/c:/xiaoli/...` 机器绝对链接改为仓库相对链接，并收敛到 `docs/README.md` 文档索引
 
 ### 整合包 MVP 的进入条件
 - [ ] 完成 `启动 -> 自动连接 -> 监听 -> 跟随 -> 停止 -> 聊天 -> 断线 -> 重连` 回归链
@@ -555,13 +613,13 @@
 
 - [ ] 当前工具在 Adapter 未提供 `health` / `food` 时按 `20` 返回；后续需确认应改为 `available: false`、字段为 `null` 还是工具错误，确认前不修改 MCP 响应语义
 
-## 待确认设计：云端 Planner 上下文投影
+## 历史记录：云端 Planner 上下文投影设计（已由下方任务完成）
 
 - [x] 盘点当前 planner 外发的精简观察、记忆摘要与完整状态快照
 - [x] 定义字段白名单、数据流、缺失字段行为、数量上限与兼容边界，详见 `docs/planner-context-projection-design.md`
-- [ ] 经确认后先写纯投影器回归测试，覆盖坐标、实体 ID、notes、未知 params 和事件 payload 不外发
-- [ ] 实现 `buildPlannerContextProjection()` 并移除 planner 请求中的完整状态消息
-- [ ] 更新 README、路线图、测试文档、changeset 与 CLAUDE，并完成全量验证
+- [x] 经确认后先写纯投影器回归测试，覆盖坐标、实体 ID、notes、未知 params 和事件 payload 不外发
+- [x] 实现 `buildPlannerContextProjection()` 并移除 planner 请求中的完整状态消息
+- [x] 更新 README、路线图、测试文档、changeset 与 CLAUDE，并完成全量验证
 
 ## 当前任务：云端 planner 上下文投影
 
@@ -605,8 +663,8 @@
 
 ### 依赖安全审计债务
 
-- [ ] 2026-07-31 MCP SDK 1.30.0 与 Yggdrasil 1.8.0 升级后的 `npm audit --omit=dev` 仍报告 17 个既有问题（1 low、7 moderate、9 high）；Yggdrasil 的嵌套 `uuid@10` 也命中 `<11.1.1` advisory
-- [ ] MCP SDK 与 Yggdrasil 包版本升级已完成；继续分别评估 MCP Web 传递依赖、UUID/Microsoft 认证链和 Mineflayer，先补齐外部 stdio、真实登录、认证与寻路回归，不执行会建议降级 Mineflayer 的 `npm audit fix --force`
+- [x] 2026-07-31 快照中的 17 项依赖告警已记录为历史事实；截至 2026-08-14 重新运行 `npm audit --omit=dev` 返回 0 项，当前未发现生产依赖审计告警
+- [ ] MCP SDK 与 Yggdrasil 包版本升级已完成；继续分别验证 MCP Web 传递依赖、UUID/Microsoft 认证链和 Mineflayer，先补齐外部 stdio、真实登录、认证与寻路回归，不执行会建议降级 Mineflayer 的 `npm audit fix --force`
 - [ ] 配置 Git remote 并首次推送后，确认 `moony-mcbot CI` 在 GitHub runner 的干净环境通过
 
 ## 当前任务：收紧 action-tools 未使用符号检查
@@ -1178,3 +1236,314 @@
 - [x] 同步 `CLAUDE.md` 精简索引与本轮 release entry
 - [x] 校验 11 个 Markdown 相对链接、203 条 release entry、lint、源码/测试 typecheck、366 项完整测试和 build，结果全部通过
 - [x] 完成新增行隐私、成熟度表述、4 文件范围与最终 diff 自审；网络恢复后已推送 `main`，并同步 GitHub 仓库描述与 6 个 topics
+
+## 当前任务：interact.eat 统一 Command Invocation 迁移
+
+- [x] 盘点 MCP、Web 与 Agent 三个 `interact.eat` 入口、`BotRuntime.eatFood()` 以及现有 CommandDispatcher 试点
+- [x] 确认边界：统一命令输出保持 Web 现有 `{ botId, action, result }` 结构；MCP 文本/`isError`、Web endpoint/HTTP/action history、Agent 参数校验/文本和默认 allowlist 均保持不变
+- [x] 尝试 Context7 与 Notion 知识检索；Context7 因本机 API key 无效不可用，当前没有可用 Notion 连接，改用 MCP 官方 TypeScript SDK 文档核对工具级错误语义
+- [x] 运行现有 Agent、CommandDispatcher 与 stop-follow 跨入口测试基线，现有 32 项测试通过
+- [x] 先补 Agent、MCP、Web 三入口兼容与统一历史回归测试，并确认实现缺失时 3 项测试均因命令历史为空而按预期红灯
+- [x] 将 `interact.eat` 注册到现有 CommandDispatcher，并把三个入口的实际执行委托给统一命令
+- [x] 分别验证 Agent、MCP、Web 正常路径和失败路径，35 项相关回归、源码/测试 typecheck 与局部 lint 通过，旧公共契约保持不变
+- [x] 更新 Commands/Agent README、命令设计、架构路线图、项目审计、手动测试、根 README、CLAUDE 与 changeset；204 条 release entry 校验通过，CLAUDE 为 2534 字节
+- [x] 完成 35 项定向测试、204 项 release 校验、lint、源码/测试 typecheck、369 项完整测试、build、34 个相关本地文档链接、三入口旧直接调用归零、默认权限未扩大、CLAUDE 2534 字节和 diff 自审
+
+## 当前任务：inventory.holdByCategory 统一 Command Invocation 迁移
+
+- [x] 比较 `interact.openDoor`、`player.look` 与 `inventory.holdByCategory` 的三入口契约，选择参数已对齐且默认允许的库存类别持有作为第三试点
+- [x] 确认边界：canonical 输出保持 Web 现有 `{ action: "hold-category", result }`；MCP schema/文本/`isError`、Web endpoint/HTTP/action history、Agent 类别错误/文本和默认 allowlist 均保持不变
+- [x] 尝试 Context7 与 Notion 知识检索；Context7 因本机 API key 无效不可用，当前没有可用 Notion 连接，改用 MCP 官方 TypeScript SDK 文档核对 schema 与工具级错误语义
+- [x] 运行现有 MCP 注册、Catalog 与 Agent 框架测试基线，现有 27 项测试通过
+- [x] 先补 Agent、MCP、Web 三入口正常/失败、类别 trim 与统一历史回归测试；3 项测试均仅因统一命令历史为空而按预期红灯，测试类型检查通过
+- [x] 注册 `inventory.holdByCategory` canonical 命令，新增 Web helper，并把三个入口的实际执行委托给统一命令
+- [x] 分别验证三入口旧返回契约、Command History source 与默认权限保持不变；36 项相邻回归、源码/测试 typecheck 与局部 lint 通过
+- [x] 更新 Commands/Agent README、命令设计、路线图、审计、手动测试、根 README、CLAUDE 与 changeset；205 条 release entry 与 8 个相关文件中的 34 个本地链接校验通过
+- [x] 完成 205 条 release 校验、lint、源码/测试 typecheck、372 项完整测试、build、8 个相关文件中的 34 个本地链接、入口直调/默认权限审计、尾随空白/冲突标记与 diff 自审；`CLAUDE.md` 为 2565 字节
+
+## 当前任务：interact.openDoor 统一 Command Invocation 迁移
+
+- [x] 盘点 MCP、Web、Agent 三入口与 `BotRuntime.openDoor()`，确认三处默认值、类型转换和范围校验并不完全相同
+- [x] 确认边界：canonical 输出保持 Web 现有 `{ botId, action: "openDoor", result }`；MCP schema/文本/`isError`、Web endpoint/HTTP/action history、Agent `Number(...)` 转换/文本和默认 allowlist 均保持不变
+- [x] 尝试 Context7 与 Notion 知识检索；Context7 仍因本机 API key 无效不可用，当前没有可用 Notion 连接，继续以仓库契约与 MCP 官方 TypeScript SDK 文档核对协议边缘校验和工具级错误语义
+- [x] 运行现有 MCP 注册、Catalog、Adapter 与前三个 CommandDispatcher 试点测试基线，现有 45 项测试通过
+- [x] 先补 Agent、MCP、Web 三入口正常/失败、默认值/类型转换与统一历史回归测试；3 项测试均仅因统一命令历史为空而按预期红灯，测试类型检查通过
+- [x] 注册 `interact.openDoor` canonical 命令，迁移 Web helper、Agent 与 MCP 的实际执行调用
+- [x] 验证三入口旧返回契约、Command History source、Adapter 参数和默认权限保持不变；48 项相邻回归、源码/测试 typecheck 与局部 lint 通过
+- [ ] 待确认：Agent `interact.openDoor` 对非数值字符串沿用 `Number(...) -> NaN` 并继续传给 Runtime；本轮为兼容保留并补回归，后续若改为明确参数错误需先确认公共 Agent 执行语义
+- [x] 更新 Commands/Agent/Runtime README、命令设计、路线图、审计、手动测试、根 README、CLAUDE 与 changeset；206 条 release entry 与 9 个相关文件中的 37 个本地链接校验通过
+- [x] 完成 206 条 release 校验、lint、源码/测试 typecheck、375 项完整测试、build、9 个相关文件中的 37 个本地链接、入口直调/MCP schema/默认权限审计、尾随空白/冲突标记与 diff 自审；`CLAUDE.md` 为 2585 字节
+
+## 当前任务：Canonical Action Command 模块所有权收敛
+
+- [x] 比较剩余 Web/MCP/Agent 入口；`hold-slot`、`right-click`、`organizeHotbar` 均缺少至少一个入口，攻击与丢弃属于高风险，不扩展第五个试点
+- [x] 确认边界：仅抽取现有四个 canonical 命令的 schema、输出校验、注册与 typed invocation；MCP/Web/Agent 输入输出、默认权限、命令 ID、历史格式和跟随状态清理顺序保持不变
+- [x] 尝试 Context7 检索 TypeScript 模块边界；本机 API key 仍无效，当前没有可用 Notion 连接，改用 TypeScript 官方模块文档核对 type-only import 与 NodeNext `.js` 路径语义
+- [x] 运行四个现有试点与 CommandDispatcher 定向测试基线，现有 20 项测试通过
+- [x] 先补 ActionCommandSet 的注册、依赖注入、typed invocation、失败和历史回归测试，并确认实现缺失时因模块不存在按预期红灯
+- [x] 新建明确的 commands 模块并将 `action-tools.ts` 收敛为组合根与入口适配层
+- [x] 分别验证四个试点的 Agent、MCP、Web 契约和 Command History 不变，22 项定向测试、源码/测试 typecheck 与局部 lint 通过
+- [x] 更新 Commands/Agent/Runtime README、命令设计、路线图、审计、根 README、CLAUDE、手动测试与 changeset
+- [x] 完成 50 项扩展回归、207 条 release 校验、lint、源码/测试 typecheck、377 项完整测试、build、10 个相关文件中的 37 个本地链接、旧 canonical 所有权引用与 commands 层违规依赖归零、CLAUDE 2600 字节、尾随空白及 diff 自审
+
+## 当前任务：跟随会话资源生命周期收敛
+
+- [x] 盘点 follow interval、session 元数据、movement subscription 的全部读写点与普通停止/全局停机顺序
+- [x] 确认边界：新生命周期仅拥有上述三类状态；移动相关标识、Agent task/event、停止移动、提示语和 follow tick 业务继续留在编排层
+- [x] 核对 Node.js `setInterval` 返回句柄可交给 `clearInterval` 取消；Context7 明确不适用于仓库内部重构，当前环境没有可用 Notion 工具
+- [x] 运行现有 follow 决策、stop-follow 跨入口与停机测试基线，现有 11 项测试通过
+- [x] 先补生命周期注册、查询、普通停止、异常顺序和全局清理回归测试，并确认实现缺失时按预期红灯；新增 7 项生命周期测试
+- [x] 实现 `FollowSessionLifecycle`，将 `action-tools.ts` 的三张 follow Map 替换为单一所有者
+- [x] 验证 follow 状态读取、启动/停止、断线失败和全局停机契约保持不变；50 项相邻回归通过
+- [x] 更新 Runtime README、架构路线图、审计、根 README、CLAUDE、手动测试、changeset 与 TODO
+- [x] 完成 7 项生命周期、50 项相邻回归、208 项 release 校验、lint、源码/测试 typecheck、384 项完整测试、build、文档与依赖审计、敏感信息扫描和 diff 自审
+- [ ] 搁置：普通停止时 movement unsubscribe 抛错会阻断 session 删除与任务终态；本轮为保持旧异常顺序不修复，后续若改需单独确认运行语义
+- [ ] 搁置：`stopActionRuntime()` 旧行为只释放 follow interval 与 movement subscription，不清 session 元数据；本轮用分阶段停机 API 保持兼容，后续应单独补“停机后状态不可见”契约再修复
+
+## 当前任务：移动意图相关标识所有权收敛
+
+- [x] 盘点旧移动相关标识 Map 的全部读写点、动作类型和清理语义
+- [x] 确认新 Store 只拥有每个 bot 当前 movement correlation key，不拥有 Pathfinder、Adapter、任务或事件副作用
+- [x] 先补 Store 的 bot 隔离、覆盖、查询和删除测试；3 项通过
+- [x] 将 follow、定点移动、决斗、聊天攻击和采矿的相关标识读写迁移到 `MovementIntentStore`
+- [x] 验证旧动作取消、迟到 Promise/事件隔离和状态快照契约不变；75 项相邻回归通过
+- [x] 更新 Runtime README、架构路线图、审计、手动测试、changeset、README、CLAUDE 与 TODO
+- [x] 完成 3 项 Store 单测、75 项相邻回归、209 项 release 校验、lint、源码/测试 typecheck、387 项完整测试、build、244 份 Markdown/51 个本地链接、旧 Map/模块违规依赖/高置信敏感信息命中归零、CLAUDE 2650 字节和 diff 自审
+
+## 当前任务：定点移动资源生命周期收敛
+
+- [x] 盘点 `goToPosition` interval、movement subscription 的全部读写点，以及普通停止、self-guard 停止和进程 shutdown 的清理顺序
+- [x] 确认边界：新生命周期只拥有每个 Bot 的 interval 与 unsubscribe；路径决策、movement correlation key、Adapter 动作、Agent task/event 和停止移动继续留在编排层
+- [x] 尝试 Context7 与 Notion 知识检索；Context7 因本机 API key 无效不可用，当前没有可用 Notion 连接。本轮无新增第三方 API，按仓库现有 timer 与 lifecycle 契约推进
+- [x] 运行定点移动、Agent 执行、movement event、self-guard lifecycle 与 shutdown 测试基线，现有 37 项测试通过
+- [x] 先补资源注册、当前句柄判定、普通停止、异常顺序和两阶段 shutdown 回归测试；新增 6 项生命周期测试并确认缺少实现时按预期红灯
+- [x] 实现 `PositionMovementLifecycle`，将 `action-tools.ts` 的两张定点移动资源 Map 替换为单一所有者
+- [x] 验证定点移动启动/到达/失败、self-guard 停止、迟到结果隔离和全局停机契约保持不变；43 项相邻回归、源码 typecheck 与局部 lint 通过
+- [x] 更新 Runtime README、架构路线图、审计、根 README、CLAUDE、手动测试、changeset 与 TODO
+- [x] 完成 210 条 release 校验、lint、源码/测试 typecheck、393 项完整测试和 build
+- [x] 完成旧定点移动 Map 引用、runtime 违规依赖、高置信敏感信息、冲突标记、Markdown 本地链接与 diff 自审；`CLAUDE.md` 为 2670 字节
+- [ ] 待手测：真实服务器上的定点移动绕障、途中封路、主动停止、self-guard 停止与进程 shutdown 观察，详见 `docs/manual-testing-guide.md` 的 7.9、6.3 和 2.3
+
+## 当前任务：对决会话资源生命周期收敛
+
+- [x] 盘点 duel interval、session 元数据、entity/movement subscription 的全部读写点，以及普通停止与进程 shutdown 的清理顺序
+- [x] 确认边界：新生命周期只拥有上述四类资源；目标选择、250ms tick、movement correlation key、Adapter 追击/攻击、聊天、Agent task/event 和停止移动继续留在编排层
+- [x] 尝试 Context7 与 Notion 知识检索；Context7 因本机 API key 无效不可用，当前没有可用 Notion 连接。本轮无新增第三方 API，按仓库现有 timer、订阅和 lifecycle 契约推进
+- [x] 运行对决决策、Agent/MCP 契约、Adapter 实体动作、movement event 与 shutdown 测试基线，现有 61 项测试通过
+- [x] 先补 session 注册/更新、资源查询、普通停止、双订阅异常顺序和两阶段 shutdown 回归测试；新增 7 项生命周期测试并确认缺少实现时按预期红灯
+- [x] 实现 `DuelSessionLifecycle`，将 `action-tools.ts` 的三张 duel 资源 Map 替换为单一所有者
+- [x] 验证对决启动、目标死亡、自身死亡、目标丢失、追击失败、迟到事件和全局停机契约保持不变；78 项相邻回归、源码 typecheck 与局部 lint 通过
+- [x] 更新 Runtime README、架构路线图、审计、根 README、CLAUDE、手动测试、changeset 与 TODO
+- [x] 完成 release 校验、lint、源码/测试 typecheck、完整测试、build、文档/依赖/敏感信息检查和 diff 自审；211 个发布条目有效，400 项测试通过
+- [ ] 待手测：真实服务器上持续对决的目标死亡、自身死亡、目标短暂/持续丢失、追击失败、主动停止、断线与进程 shutdown，详见 `docs/manual-testing-guide.md` 的 6.3 和 7.8
+- [ ] 搁置：普通停止时若 entity 或 movement 订阅清理抛错，后续资源清理与任务结算会被中断；这是迁移前既有行为，本轮为兼容而保留，后续需单独定义容错契约
+- [ ] 搁置：进程 shutdown 会清除 duel interval 与订阅，但保留 session 元数据；这是迁移前既有行为，若后续支持同进程重启 Action Runtime，需要另行决定是否清空 session
+
+## 当前任务：持续行走计时器生命周期收敛
+
+- [x] 盘点 `walkTimers` 的 Agent/MCP 创建、覆盖、到期删除、手动停止、跟随抢占与进程 shutdown 路径
+- [x] 确认边界：新生命周期只拥有每个 Bot 的持续行走 timeout；停止移动、清理 movement intent、Adapter 调用和各入口返回文本继续由 `action-tools.ts` 编排
+- [x] 完成知识检索判断：本轮无新增第三方依赖，Context7 明确不用于普通业务重构，当前也没有可用 Notion 连接；按仓库已有 timer/lifecycle 契约推进
+- [x] 运行 Agent/MCP 行走与 shutdown 相关测试基线，现有 53 项测试通过
+- [x] 先补 timer 登记、到期、普通停止、替换兼容语义和全局停止回归测试，并确认缺少实现时按预期红灯；新增 7 项生命周期测试
+- [x] 实现 `WalkTimerLifecycle`，将 `action-tools.ts` 的 `walkTimers` Map 替换为单一所有者
+- [x] 验证 Agent/MCP 行走、停止、跟随抢占和进程 shutdown 契约保持不变；63 项相邻回归、源码/测试 typecheck 与局部 lint 通过
+- [x] 更新 Runtime README、架构路线图、审计、根 README、CLAUDE、手动测试、changeset 与 TODO
+- [x] 完成 release 校验、lint、源码/测试 typecheck、完整测试、build、文档/依赖/敏感信息检查和 diff 自审；212 个发布条目有效，410 项测试通过
+- [ ] 待手测：在安全封闭区域验证 MCP `movement.walk` 自然到期、`movement.stop` 提前取消和运行中 `Ctrl+C`，详见 `docs/manual-testing-guide.md` 的积压清单与 6.3
+- [ ] 搁置：`WalkTimerLifecycle.schedule` 为兼容旧行为不会隐式停止同 Bot 的旧 timer；调用方必须先调用 `stop`，否则旧 timer 到期会删除当前登记。现有 Agent/MCP 入口均遵守此前置条件，后续若调整替换语义需单独评估
+
+## 当前任务：Agent executor 资源生命周期收敛
+
+- [x] 盘点 executor interval、按 Bot 串行 Promise tail、配置删除、状态投影、重载与 shutdown/flush 的全部读写点
+- [x] 确认边界：新生命周期只拥有 interval 与运行 tail；Agent tick、配置判断、planner/工具执行、状态文本和公共 MCP/Web/Agent 契约保持不变
+- [x] 完成知识检索判断：Context7 的工具契约明确排除仓库内部重构，当前环境没有可用 Notion 工具；本轮无新增第三方依赖，按仓库现有 lifecycle 与 Promise 队列契约推进
+- [x] 运行 Agent 配置、状态、重载、通用队列与 shutdown 定向测试基线，现有 20 项测试通过；首次沙箱内运行因 Node 子进程 `spawn EPERM` 失败，获批后在沙箱外复跑通过
+- [x] 先补 loop 登记/替换、按 Bot 串行/并行、异常隔离、run 遗忘和 shutdown/flush 兼容测试，并确认实现缺失时因模块不存在按预期红灯；新增 8 项生命周期测试和 1 项 MCP 状态接线测试
+- [x] 实现 `AgentExecutorLifecycle`，将 `action-tools.ts` 的两张 executor Map 替换为单一所有者
+- [x] 验证 executor 启停、状态投影、配置删除、热重载、任务串行和 shutdown/flush 契约保持不变；29 项相邻回归、源码/测试 typecheck 与局部 lint 通过
+- [x] 更新 Runtime README、架构路线图、审计、根 README、CLAUDE、手动测试、changeset 与 TODO
+- [ ] 待手测：真实服务中切换 Agent `auto/manual`、重载/删除配置和 `Ctrl+C` 时观察 `executorAttached`、新 tick 停止、已开始 run 的 flush 顺序；不要求进入游戏，详见 `docs/manual-testing-guide.md` 的 2.3 和 6.3
+- [ ] 搁置：planner 请求取消、可取消 executor run 和动态 drain 尚未引入；本轮刻意保持旧的不可取消与 flush 快照语义，后续需单独定义公共状态和退出契约
+- [x] 完成 213 条 release 校验、lint、源码/测试 typecheck、419 项完整测试、build、敏感信息/旧引用/diff 自审；`CLAUDE.md` 为 2710 字节
+
+## 当前任务：Agent 黑板协调状态收口
+
+- [x] 盘点任务超时 timer 当前 ID 与层级 tick 冷却的读写、Bot 删除和 executor 调用路径
+- [x] 确认边界：由已有 `HierarchicalAgentRuntime` 负责这两类黑板协调状态；不改变 timer 过期事件、tick 最小间隔、planner 请求、公共入口或状态文本
+- [x] 完成知识检索判断：Context7 明确排除仓库内部重构，当前环境没有可用 Notion 工具；本轮无新增第三方 API，按已有 Agent runtime 契约推进
+- [x] 先补任务 timer 替换/清除/过期和 tick 首次/冷却边界回归测试，并确认实现缺失时按预期红灯
+- [x] 将 `action-tools.ts` 的 `hierarchicalTaskTimerIds`、`hierarchicalLastTickAt` 迁入 Agent runtime，并保持旧调用顺序
+- [x] 更新 Agent/Runtime README、架构路线图、审计、手动测试、CLAUDE、changeset 与本 TODO
+- [x] 运行定向测试、release 校验、lint、源码/测试 typecheck、完整测试、build 和 diff 自审；214 条 release 校验、421 项完整测试、lint、typecheck、build 均通过
+- [ ] 搁置：Agent 任务历史/记忆、planner 请求与执行、完整 tick 副作用编排仍在 `action-tools.ts`；planner 冷却判定已在后续小步迁入 runtime，本轮不扩展到其余公共行为
+
+## 当前任务：Agent planner 冷却判定收口
+
+- [x] 盘点 `lastPlanAt`、`planCooldownMs` 与 Agent runtime planner 时间戳的读写和热重载边界
+- [x] 确认边界：只迁移冷却判定与时间戳所有权；保留配置诊断镜像、并发请求语义、请求取消和 planner 执行队列
+- [x] 先补 runtime 的首次、恰好到期、时钟回退和配置时间戳同步测试，并确认实现缺失时按预期红灯
+- [x] 让 `HierarchicalAgentRuntime` 负责 planner 冷却判定，`action-tools.ts` 只负责配置读取、请求和诊断写回
+- [x] 更新 Runtime/Agent 文档、架构路线图、审计、手动测试、CLAUDE、changeset 与本 TODO
+- [x] 运行定向测试、release 校验、lint、源码/测试 typecheck、完整测试、build 和 diff 自审
+- [ ] 搁置：planner 请求取消、可取消 executor run、动态 drain、任务历史/记忆和完整 tick 副作用仍不在本轮范围
+
+## 当前任务：启动优先的测试与文档导航收敛
+
+- [x] 盘点根 README、测试指南、Agent 验收清单、早期技术栈文档和 `docs/` 内部引用
+- [x] 确认边界：保留运行契约和活跃设计文档；本轮只整理信息架构，不修改 MCP、Web、Agent、配置或游戏行为
+- [x] 确认本轮不涉及第三方 API 或依赖选型，外部知识检索不能提高仓库内文档归并的准确性，以当前代码、脚本和文档引用为事实源
+- [x] 在手动测试指南最前面增加从环境检查、启动、Web 健康检查到核心冒烟的唯一推荐路径
+- [x] 增加 `docs/README.md` 文档索引，区分使用入口、当前架构、技术契约、未来规划和历史记录
+- [x] 将重复的 Agent 验收场景、核心链清单和早期登录技术栈文档收敛为兼容跳转页，保留旧链接但移除重复正文
+- [x] 修复根 README 的测试入口、文档索引和机器绝对链接，并折叠过长能力清单
+- [x] 更新 CLAUDE、手测积压说明和 changeset
+- [x] 运行 Markdown 本地链接检查（27 个文件）、release 校验（216 条）、lint、typecheck、完整测试（422 项）、build 和 diff 自审
+
+## 当前任务：Agent 任务历史所有权收口
+
+- [x] 盘点 `agentTaskHistory` 的按 Bot 读写、持久化投影、热重载替换、清理和调试/MCP 消费路径
+- [x] 确认边界：只迁移最近任务历史的内存所有权与复制/上限语义；任务生命周期、文件写队列、玩家/地点记忆和公共返回契约保持不变
+- [x] 确认本轮不新增依赖或外部 API；按现有 Store/lifecycle 模式实现纯 TypeScript 运行时模块
+- [x] 先补 Store 的多 Bot 隔离、深拷贝、替换、上限、清空、删除和非法上限回归测试
+- [x] 实现 `AgentTaskHistoryStore`，不读取环境变量、不持有 Bot 或 ConfigStore、不操作文件
+- [x] 将 `action-tools.ts` 的任务历史读写、持久化投影和清理路径委托给 Store
+- [x] 更新 Runtime/Config README、架构路线图、审计、手动测试、CLAUDE、changeset 与本 TODO
+- [x] 完成定向测试（8/8）、217 条 release 校验、lint、源码/测试 typecheck、完整测试（427/427）、build、文档链接检查和 diff 自审
+
+## 当前任务：Agent 玩家/地点记忆状态所有权收口
+
+- [x] 盘点按 Bot 玩家/地点 Map、共享基线 Map、配置加载、共享文件合并、跨 Bot 汇总、工具删除/清空和调试读取路径
+- [x] 确认边界：新 Store 只拥有四组内存状态及复制/合并语义；输入规范化、时间戳生成、文件 I/O、持久化队列、territory 联动和公共 MCP/Web/JSON 契约保持不变
+- [x] 确认共享兼容：`players.json` / `places.json` 的 `version: 1` schema、共享记录严格较新才导入、跨 Bot 同时间戳后遍历覆盖语义保持不变；Voice 继续只读共享文件
+- [x] 确认本轮不新增依赖或外部 API；Notion/Context7 当前不可用，内部状态迁移不需要无关网络检索
+- [x] 先补多 Bot 隔离、输入/输出深拷贝、共享种子、严格时间戳合并、跨 Bot 最新快照、替换、删除和清空回归测试
+- [x] 实现 `AgentGameMemoryStateStore`，不读取环境变量、不操作文件、不持有 Bot、ConfigStore、持久化队列或 territory
+- [x] 将 `action-tools.ts` 的玩家/地点及共享基线全部读写委托给 Store，并删除四张旧裸 Map 与重复 clone/merge helper
+- [x] 在配置热重载集成测试中确认玩家/地点恢复和配置删除清理，保持 task history 与 territory 断言
+- [x] 更新 Memory/Config README、共享记忆计划、架构路线图、审计、手动测试、根 README、CLAUDE、changeset 与本 TODO
+- [x] 完成定向测试（19/19）、218 条 release 校验、lint、源码/测试 typecheck、完整测试（432/432）、build、文档链接、敏感信息和 diff 自审
+
+## 当前任务：领地配置状态所有权收口
+
+- [x] 盘点 `territoryConfigs` 的默认构造、持久化投影、热重载替换、工具配置、地点删除/清空联动、状态查询和 Bot 配置删除路径
+- [x] 确认边界：本轮只迁移持久化领地配置的内存所有权与复制/替换/删除语义；参数归一化、警告/升级行为、持久化队列、公共 MCP/Web/JSON 契约和 `territoryPresence` 保持不变
+- [x] 确认不新增依赖或外部 API；Context7 明确不适用于仓库内部重构，当前没有可用 Notion 连接，以现有 ConfigStore 模式和本地测试为事实源
+- [x] 先补默认值、多 Bot 隔离、输入/输出副本、替换、已有状态查询和删除回归测试，并确认实现缺失时按预期红灯
+- [x] 实现 `TerritoryConfigStore`，不读取环境变量、不操作文件、不持有 Bot、记忆、presence、持久化队列或领地行为
+- [x] 将 `action-tools.ts` 的领地配置读写委托给 Store，并删除旧 `territoryConfigs` 裸 Map 与内联默认构造
+- [x] 在配置热重载集成测试中确认领地配置恢复、替换和配置删除清理，保持玩家/地点/任务历史断言
+- [x] 更新 Config/Runtime README、架构路线图、审计、手动测试、根 README、CLAUDE、changeset 与本 TODO
+- [x] 完成定向测试（12/12）、219 条 release 校验、lint、源码/测试 typecheck、完整测试（436/436）、build、文档链接、敏感信息和 diff 自审
+- [x] 原搁置项已完成：`territoryPresence` 时间状态已迁入独立 runtime Store，后续任务又将警告冷却与升级条件迁入纯判定；状态写回和副作用仍留在旧编排层
+- [x] 既有清理问题已修复：配置替换/删除通过 `TerritoryPresenceStore.clearBot()` 清理按 Bot 分层的全部复合 key，并由 Store 回归测试覆盖
+
+## 当前任务：领地 presence 短期状态所有权收口
+
+- [x] 盘点 `territoryPresence` 的复合 key、进入/警告/升级时间、prune、配置替换和 Bot 删除路径
+- [x] 确认边界：只迁移短期 presence 时间状态与按 Bot 清理；纯匹配决策、配置归一化、警告/战斗副作用、公共 MCP/Web/JSON 契约保持不变
+- [x] 先补多 Bot 隔离、输入/输出副本、复合 key 读写、按 active key prune 和按 Bot clear 回归测试，并确认缺实现时红灯
+- [x] 实现 `TerritoryPresenceStore`，不读取配置/环境变量、不操作文件、不持有 BotRegistry、不发送聊天或启动战斗
+- [x] 将 `action-tools.ts` 的 presence 读写、prune、配置替换和 Bot 删除委托给 Store，修复按 Bot 清理复合 key 的既有问题
+- [x] 同步 Runtime README、架构/持久化文档、手动测试、根 README、CLAUDE、changeset 与本 TODO
+- [x] 完成定向测试（12/12）、220 条 release 校验、lint、源码/测试 typecheck、完整测试（440/440）、build、文档链接、敏感信息和 diff 自审
+
+## 当前任务：领地警告冷却与升级判定收口
+
+- [x] 盘点 `maybeHandleTerritoryWarning` 的首次警告、冷却边界、升级延迟、主人在场和已升级状态转移
+- [x] 确认边界：保持“冷却到期先警告、下一 tick 才可能升级”的既有顺序；不迁移聊天、Agent 事件、决斗、配置归一化或公共契约
+- [x] 先补纯判定的正常、边界、owner policy、重复升级和无效输入测试，并确认缺实现时红灯
+- [x] 实现独立 territory warning decision 模块，输出动作和下一状态，不持有 Store、BotRegistry、配置或副作用
+- [x] 将 `action-tools.ts` 的警告/等待/升级分支委托纯判定，保留原事件文案、发送顺序和 `startDuel` 调用
+- [x] 同步 Runtime README、架构路线图、审计、手动测试、根 README、CLAUDE、changeset 与本 TODO
+- [x] 完成定向测试（21/21）、221 条 release 校验、lint、源码/测试 typecheck、完整测试（449/449）、build、文档链接、敏感信息和 diff 自审
+
+## 当前任务：TerritoryRuntime 副作用编排收口
+
+- [x] 盘点领地 tick 调用位置、配置/快照采集、presence prune、状态写回、聊天、事件和决斗顺序
+- [x] 确认接口：Runtime 接收规范化输入和同步 hooks，内部拥有 `TerritoryPresenceStore`；调用层继续拥有 BotRegistry、配置/记忆读取和具体副作用
+- [x] 确认兼容边界：不改变 Agent tick 优先级、handled 布尔、事件文案、决斗目标、MCP/Web/JSON、持久化或真实游戏行为
+- [x] 先补首次警告、冷却优先、等待/升级、离开重入、多 Bot/clear 和 hook 异常状态顺序测试，并确认缺实现时红灯
+- [x] 实现 `TerritoryRuntime`，组合现有 presence/decision/Store，不读取环境变量或文件，不持有 BotRegistry
+- [x] 将 `action-tools.ts` 改为采集上下文并提供副作用 hooks，配置替换/删除改用 Runtime 清理
+- [x] 同步 Runtime README、架构路线图、审计、持久化/手测文档、根 README、CLAUDE、changeset 与本 TODO
+- [x] 完成定向测试（27/27）、222 条 release 校验、lint、源码/测试 typecheck、完整测试（455/455）、build、42 个本地文档链接、高置信敏感信息、冲突标记、旧所有权引用和 diff 自审
+
+## 当前任务：Agent 任务进度节流状态收口
+
+- [x] 盘点 `agentTaskProgressAt` 的读取、写入、任务结算和 Agent 配置删除路径，以及 `task_progress` 事件发布顺序
+- [x] 确认接口：`HierarchicalAgentRuntime` 负责进度判定、成功发布后的时间记录和显式清理；Supervisor 提供不创建新 Runtime 的按 Bot 清理
+- [x] 确认兼容边界：保持事件成功写入后才记录节流状态、同任务/同详情 1200ms 精确边界、任务或详情变化立即允许、时钟回退抑制，以及原事件 payload/顺序
+- [x] 完成知识检索判断：Context7 明确排除仓库内部重构，当前没有 Notion 连接；本轮不新增依赖或外部 API，以现有 Agent runtime 与 455 项测试基线为事实源
+- [x] 先补首次、只读判定、冷却边界、详情/任务变化、时钟回退和清理测试，并确认新增接口缺失时红灯
+- [x] 实现 Runtime/Supervisor 任务进度状态所有权，并删除 `action-tools.ts` 的旧裸 Map
+- [x] 同步 Agent/Runtime README、架构路线图、审计、手动测试、根 README、CLAUDE、changeset 与本 TODO
+- [x] 完成定向测试（20/20）、223 条 release 校验、lint、源码/测试 typecheck、完整测试（457/457）、build、文档链接、敏感信息和 diff 自审
+
+## 当前任务：Agent 战略生命周期去重状态收口
+
+- [x] 盘点普通生命周期提示与完成/放弃汇报的两条去重路径、成功记账时机和 Agent 配置删除清理
+- [x] 确认接口：Runtime 分别拥有“提示已占用”和“汇报已发送”两种状态，Supervisor 提供不创建新 Runtime 的按 Bot 清理
+- [x] 确认兼容边界：普通提示继续读取即占用，完成/放弃汇报继续只在聊天成功后记账，两类状态互不覆盖，生命周期历史与副作用留在编排层
+- [x] 完成知识检索判断：Context7 不适用于仓库内部状态迁移，当前没有可用 Notion 连接；本轮不新增依赖或公共 API，以现有 Runtime、编排时序和离线测试为事实源
+- [x] 先补首次、重复、事件替换、两类状态隔离、只读判定、成功记账和清理回归测试，并确认接口缺失时红灯
+- [x] 将 `action-tools.ts` 的两张战略生命周期 Map 迁移到 Runtime/Supervisor，保持事件与聊天行为不变
+- [x] 同步 Agent/Runtime README、架构路线图、审计、手动测试、根 README、CLAUDE、changeset 与本 TODO
+- [x] 完成定向测试（10/10）、224 条 release 校验、lint、源码/测试 typecheck、完整测试（459/459）、build、44 个本地文档链接、高置信敏感信息、冲突标记、旧 Map 引用和 diff 自审
+
+## 当前任务：Agent 库存变化摘要基线收口
+
+- [x] 盘点 `agentInventorySnapshots` 的首次采样、重复抑制、变化事件和 Agent 配置删除清理路径
+- [x] 确认接口：`HierarchicalAgentRuntime` 更新库存摘要并返回是否相对已有基线发生变化，Supervisor 提供不创建新 Runtime 的按 Bot 清理
+- [x] 确认兼容边界：首次观察只建立基线，摘要相同不报告，变化时先更新基线再由编排层发布事件，普通 self-guard stop 不清理，Agent 配置删除才清理
+- [x] 完成知识检索判断：本轮是仓库内部状态所有权迁移，不新增依赖或外部 API；Context7 不适用且当前没有可用 Notion 连接
+- [x] 先补首次、重复、变化、回变、清理和缺失 Runtime 回归测试，并确认接口缺失时红灯
+- [x] 将 `action-tools.ts` 的 `agentInventorySnapshots` 裸 Map 迁移到 Runtime/Supervisor，保持摘要与事件行为不变
+- [x] 同步 Agent/Runtime README、架构路线图、审计、手动测试、根 README、CLAUDE、changeset 与本 TODO
+- [x] 完成定向测试（12/12）、相邻回归（44/44）、225 条 release 校验、lint、源码/测试 typecheck、完整测试（461/461）、build、35 个本地文档链接、高置信敏感信息、冲突标记、旧 Map 引用和 diff 自审
+
+## 当前任务：Agent 空闲社交尝试冷却收口
+
+- [x] 盘点 `agentIdleSocialAt` 的目标选择后判定、冷却边界、尝试前记账和 Agent 配置删除清理路径
+- [x] 确认接口：`HierarchicalAgentRuntime` 负责判定并占用下一次空闲社交尝试，Supervisor 提供不创建新 Runtime 的按 Bot 清理
+- [x] 确认兼容边界：保留时间戳初值为 `0`、冷却恰好到期可触发、时钟回退抑制、失败尝试仍占用冷却，以及普通 executor 停止/策略切换不清理的语义
+- [x] 完成知识检索判断：本轮是仓库内部状态所有权迁移，不新增依赖或外部 API；Context7 明确不适用于内部重构，当前没有可用 Notion 连接
+- [x] 先补首次/初值、重复、精确边界、时钟回退、失败前记账和缺失 Runtime 清理回归测试，并确认接口缺失时红灯
+- [x] 将 `action-tools.ts` 的 `agentIdleSocialAt` 裸 Map 迁移到 Runtime/Supervisor，保持目标选择、任务与聊天行为不变
+- [x] 同步 Agent/Runtime README、架构路线图、审计、手动测试、根 README、CLAUDE、changeset 与本 TODO
+- [x] 完成定向测试（14/14）、相邻回归（24/24）、226 条 release 校验、lint、源码/测试 typecheck、完整测试（463/463）、build、44 个本地文档链接、高置信敏感信息、冲突标记、旧 Map 引用和 diff 自审
+
+## 当前任务：社交与人格短期运行状态收口
+
+- [x] 盘点最近互动、最近主动发言、短期回复归属、心情和分场景冷却五组裸 Map 的 chat/self-guard 读写路径
+- [x] 确认接口：新增 `SocialRuntimeStateStore` 按 Bot 管理五组短期状态，场景台词使用原子 `claimSceneLine()` 保留判定与占用顺序
+- [x] 确认兼容边界：保留场景时间戳初值 `0`、精确冷却边界、时钟回退抑制、发送前占用、主动发言成功路径记账、30 秒回复上下文严格过期判断和空心情回退语义
+- [x] 确认生命周期边界：本轮不把整组状态绑定到 chat/AI/Agent/self-guard 任一配置删除或普通停止；Store 提供按 Bot 清理能力，但不新增生产清理调用
+- [x] 完成知识检索判断：本轮不新增依赖或外部 API；Context7 明确排除内部重构，当前没有可用 Notion 连接，以现有调用顺序和测试为事实源
+- [x] 先补多 Bot 隔离、互动初始化、主动发言、回复上下文副本、心情、场景边界/回退和按 Bot 清理测试，并确认缺实现时红灯
+- [x] 实现 Store 并替换 `action-tools.ts` 的五张裸 Map，保持聊天、self-guard、AI 动态状态和共享记忆行为不变
+- [x] 同步 Runtime README、架构路线图、审计、持久化/手动测试、根 README、CLAUDE、changeset 与本 TODO
+- [x] 完成定向测试（46/46）、release 校验（227 条）、lint、源码/测试 typecheck、完整测试（467/467）、build、文档链接（265 个 Markdown 文件）、敏感信息、冲突标记、旧 Map 所有权和 diff 自审
+- [ ] 搁置：`BotRegistry.delete()` 尚无生产级统一资源清理钩子；在该生命周期落地前，不调用 `SocialRuntimeStateStore.clearBot()` 改变现有进程内保留语义
+
+## 当前任务：聊天监听资源生命周期收口
+
+- [x] 盘点聊天订阅句柄、Bot 引用、监听状态查询、配置删除、重连替换、watchdog 和 shutdown 清理路径
+- [x] 确认接口：新增 `ChatListenerLifecycle`，按 Bot 拥有订阅资源并拥有单例 watchdog interval；调用层继续创建消息处理器和读取配置
+- [x] 确认兼容边界：保留同 Runtime 且已连接时复用、替换/停止先 unsubscribe 后删除、解绑抛错时保留记录、订阅创建失败时不登记，以及 shutdown 逐 Bot 隔离错误的语义
+- [x] 完成知识检索判断：本轮不新增依赖或公共 API，属于仓库内部资源生命周期迁移；Context7 不适用，当前没有可用 Notion 连接
+- [x] 先补订阅隔离、引用匹配、停止顺序、解绑失败、watchdog 单例/停止、shutdown 错误隔离和非法间隔测试，并确认缺实现时红灯
+- [x] 实现 Lifecycle 并替换 `action-tools.ts` 的 `chatHandlers` Map 与 `listenerWatchdogTimer`，并补 MCP 启用/重复启用/停用接线回归
+- [x] 同步 Runtime/Config README、架构路线图、审计、持久化/手动测试、根 README、CLAUDE、changeset 与本 TODO
+- [x] 完成定向测试（22/22）、release 校验（228 条）、lint、源码/测试 typecheck、完整测试（475/475）、build、文档链接（266 个 Markdown 文件）、敏感信息、冲突标记、旧状态所有权和 diff 自审
+
+## 当前任务：采矿串行任务队列所有权收口
+
+- [x] 盘点四条采矿排队入口、同 Bot 串行、错误隔离、结果回传和 shutdown flush 快照语义
+- [x] 确认接口：新增窄边界 `MiningTaskQueue`，只拥有按 Bot 的 Promise tail，并向调用层返回原任务结果
+- [x] 确认兼容边界：保留失败后继续、跨 Bot 并发、已完成 tail 留存和单次快照 flush；不引入取消、代次失效、close 或动态 drain
+- [x] 完成知识检索判断：本轮不新增依赖或公共 API，属于仓库内部任务所有权迁移；Context7 不适用，当前没有可用 Notion 连接
+- [x] 先补串行、跨 Bot 并发、结果/错误、失败恢复、tail 留存和 flush 快照回归，并确认缺实现时红灯
+- [x] 实现 Queue 并替换 `action-tools.ts` 的 `miningTasks` Map，保持四条旧采矿执行链不变
+- [x] 同步 Runtime README、架构路线图、审计、持久化/手动测试、根 README、CLAUDE、changeset 与本 TODO
+- [x] 完成定向测试（63/63）、release 校验（229 条）、lint、源码/测试 typecheck、完整测试（480/480）、build、文档链接（267 个 Markdown 文件）、敏感信息、冲突标记、顶层裸 Map 所有权和 diff 自审

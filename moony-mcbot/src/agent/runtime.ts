@@ -5,6 +5,7 @@ import { createDefaultSkillCatalog, scoreActionAgainstCatalog } from "./skill-ca
 import {
   AgentBlackboardSnapshot,
   AgentEvent,
+  AgentExecutionEvent,
   AgentTimer,
   ReactiveRule,
   SkillInvocation,
@@ -20,6 +21,13 @@ export class HierarchicalAgentRuntime {
   private readonly reactiveRules: ReactiveRule[];
   private readonly skillCatalog: SkillModuleDescriptor[];
   private lastPlannerAt = 0;
+  private lastExecutorTickAt = 0;
+  private readonly taskTimeoutTimerId: string;
+  private lastTaskProgress: { taskId: string; detail: string; at: number } | null = null;
+  private lastClaimedStrategicLifecycleInstructionEventId: string | null = null;
+  private lastPublishedStrategicLifecycleReportEventId: string | null = null;
+  private lastInventorySummary: string | undefined;
+  private lastIdleSocialAttemptAt = 0;
 
   constructor(
     readonly botId: string,
@@ -33,6 +41,7 @@ export class HierarchicalAgentRuntime {
     this.events = new AgentEventBus();
     this.reactiveRules = options?.reactiveRules ?? createDefaultReactiveRules();
     this.skillCatalog = options?.skillCatalog ?? createDefaultSkillCatalog();
+    this.taskTimeoutTimerId = `task_timeout_${botId}`;
   }
 
   updateSelfState(selfState: Record<string, unknown>): void {
@@ -61,11 +70,116 @@ export class HierarchicalAgentRuntime {
     this.blackboard.setDirective(directive);
     if (!directive) return;
     this.blackboard.enqueueActions(directive.actions);
-    this.lastPlannerAt = Date.now();
+    this.markPlannerCompleted();
+  }
+
+  syncPlannerTimestamp(timestamp: number): void {
+    if (!Number.isFinite(timestamp) || timestamp <= this.lastPlannerAt) return;
+    this.lastPlannerAt = timestamp;
+  }
+
+  markPlannerCompleted(at = Date.now()): number {
+    if (Number.isFinite(at) && at > this.lastPlannerAt) {
+      this.lastPlannerAt = at;
+    }
+    return this.lastPlannerAt;
+  }
+
+  plannerCooldownRemaining(now = Date.now(), minIntervalMs = 4_000): number {
+    if (this.lastPlannerAt === 0 || !Number.isFinite(now) || !Number.isFinite(minIntervalMs)) return 0;
+    return Math.max(0, minIntervalMs - (now - this.lastPlannerAt));
+  }
+
+  canStartPlanner(now = Date.now(), minIntervalMs = 4_000): boolean {
+    return this.plannerCooldownRemaining(now, minIntervalMs) === 0;
   }
 
   scheduleTimer(timer: AgentTimer): void {
     this.blackboard.upsertTimer(timer);
+  }
+
+  scheduleTaskTimeout(taskType: string, timeoutMs: number, now = Date.now()): string {
+    this.blackboard.removeTimer(this.taskTimeoutTimerId);
+    this.scheduleTimer({
+      id: this.taskTimeoutTimerId,
+      type: "timeout",
+      label: taskType,
+      dueAt: now + timeoutMs,
+      payload: { taskType }
+    });
+    return this.taskTimeoutTimerId;
+  }
+
+  clearTaskTimeout(): void {
+    this.blackboard.removeTimer(this.taskTimeoutTimerId);
+  }
+
+  shouldPublishTick(now = Date.now(), minIntervalMs = 5_000): boolean {
+    if (now - this.lastExecutorTickAt < minIntervalMs) return false;
+    this.lastExecutorTickAt = now;
+    return true;
+  }
+
+  canPublishTaskProgress(
+    taskId: string,
+    detail: string,
+    now = Date.now(),
+    minIntervalMs = 1_200
+  ): boolean {
+    const last = this.lastTaskProgress;
+    return (
+      !last ||
+      last.taskId !== taskId ||
+      last.detail !== detail ||
+      now - last.at >= minIntervalMs
+    );
+  }
+
+  markTaskProgressPublished(taskId: string, detail: string, at = Date.now()): void {
+    this.lastTaskProgress = { taskId, detail, at };
+  }
+
+  clearTaskProgress(): void {
+    this.lastTaskProgress = null;
+  }
+
+  claimStrategicLifecycleInstruction(eventId: string): boolean {
+    if (this.lastClaimedStrategicLifecycleInstructionEventId === eventId) return false;
+    this.lastClaimedStrategicLifecycleInstructionEventId = eventId;
+    return true;
+  }
+
+  canPublishStrategicLifecycleReport(eventId: string): boolean {
+    return this.lastPublishedStrategicLifecycleReportEventId !== eventId;
+  }
+
+  markStrategicLifecycleReportPublished(eventId: string): void {
+    this.lastPublishedStrategicLifecycleReportEventId = eventId;
+  }
+
+  clearStrategicLifecycle(): void {
+    this.lastClaimedStrategicLifecycleInstructionEventId = null;
+    this.lastPublishedStrategicLifecycleReportEventId = null;
+  }
+
+  observeInventorySummary(summary: string): boolean {
+    const previous = this.lastInventorySummary;
+    this.lastInventorySummary = summary;
+    return previous !== undefined && previous !== summary;
+  }
+
+  clearInventorySummary(): void {
+    this.lastInventorySummary = undefined;
+  }
+
+  claimIdleSocialAttempt(now = Date.now(), minIntervalMs = 20_000): boolean {
+    if (now - this.lastIdleSocialAttemptAt < minIntervalMs) return false;
+    this.lastIdleSocialAttemptAt = now;
+    return true;
+  }
+
+  clearIdleSocialAttempt(): void {
+    this.lastIdleSocialAttemptAt = 0;
   }
 
   pollExpiredTimers(now = Date.now()): AgentEvent[] {
@@ -89,7 +203,7 @@ export class HierarchicalAgentRuntime {
 
   async runStrategicPass(now = Date.now(), minIntervalMs = 4000): Promise<StrategicDirective | null> {
     if (!this.planner) return null;
-    if (now - this.lastPlannerAt < minIntervalMs) return null;
+    if (!this.canStartPlanner(now, minIntervalMs)) return null;
     const directive = await this.planner.plan(this.blackboard.snapshot());
     if (directive) {
       this.applyDirective(directive);
@@ -136,11 +250,19 @@ export class HierarchicalAgentRuntime {
   }
 
   snapshot(): AgentBlackboardSnapshot {
-    return this.blackboard.snapshot();
+    const snapshot = this.blackboard.snapshot();
+    return {
+      ...snapshot,
+      executionEvents: this.blackboard.observableExecutionEvents()
+    };
+  }
+
+  rawExecutionEvents(): AgentExecutionEvent[] {
+    return this.blackboard.rawExecutionEvents();
   }
 
   status(): Record<string, unknown> {
-    const snap = this.blackboard.snapshot();
+    const snap = this.snapshot();
     return {
       botId: this.botId,
       runtimeState: snap.runtimeState,
@@ -193,5 +315,33 @@ export class HierarchicalAgentSupervisor {
 
   listBotIds(): string[] {
     return [...this.runtimes.keys()];
+  }
+
+  clearTaskProgress(botId: string): boolean {
+    const runtime = this.runtimes.get(botId);
+    if (!runtime) return false;
+    runtime.clearTaskProgress();
+    return true;
+  }
+
+  clearStrategicLifecycle(botId: string): boolean {
+    const runtime = this.runtimes.get(botId);
+    if (!runtime) return false;
+    runtime.clearStrategicLifecycle();
+    return true;
+  }
+
+  clearInventorySummary(botId: string): boolean {
+    const runtime = this.runtimes.get(botId);
+    if (!runtime) return false;
+    runtime.clearInventorySummary();
+    return true;
+  }
+
+  clearIdleSocialAttempt(botId: string): boolean {
+    const runtime = this.runtimes.get(botId);
+    if (!runtime) return false;
+    runtime.clearIdleSocialAttempt();
+    return true;
   }
 }

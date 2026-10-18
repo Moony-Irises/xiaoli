@@ -14,7 +14,7 @@ Minecraft Java bot and local agent control plane built with TypeScript, Mineflay
 - `src/debug/`: local Web debug panel
 - `src/memory/`: shared game/chat memory storage
 - `scripts/`: typed repository validation and test infrastructure
-- `docs/`: architecture, testing and migration plans
+- `docs/`: indexed architecture, testing, contracts and migration plans; start at `docs/README.md`
 
 ## Commands
 
@@ -23,11 +23,14 @@ Minecraft Java bot and local agent control plane built with TypeScript, Mineflay
 - `npm run build`
 - `npm run typecheck`
 - `npm test`
+- `powershell -ExecutionPolicy Bypass -File .\scripts\start-mcp-server.ps1`
 
 ## Architecture
 
-The current implementation is in an adapter and command-boundary migration stage. See [docs/architecture-convergence-roadmap.md](docs/architecture-convergence-roadmap.md), [docs/command-invocation-design.md](docs/command-invocation-design.md), [docs/persistence-lifecycle-design.md](docs/persistence-lifecycle-design.md), [docs/release-entry-lifecycle.md](docs/release-entry-lifecycle.md), and [docs/modded-client-adapter-plan.md](docs/modded-client-adapter-plan.md).
+Start from [docs/README.md](docs/README.md). The current implementation is in an adapter and command-boundary migration stage; the authoritative sequence is [docs/architecture-convergence-roadmap.md](docs/architecture-convergence-roadmap.md), and manual verification starts at [docs/manual-testing-guide.md](docs/manual-testing-guide.md).
 
 ## Current Focus
 
-The project is stabilizing runtime determinism before further Adapter or modded-client work. Runtime lifecycle, command history, ConfigRepository file I/O, all four core config stores, AI requests, Chat AI/self-guard queued tasks, self-guard subscriptions, timer handles, retaliation state, short-lived guard observations, alert cooldown and reactive threshold decisions, core reconnect/health transitions, proximity transitions, combat throttling, guard environment transitions, retaliation target selection/revalidation and continuous tick decisions now have explicit owners. Agent composed state, planner execution, full self-guard tick/chase/attack orchestration, true damage attribution, Adapter world environment snapshots, four-table commit, remaining commands and domain state still need migration. Mineflayer remains the only production default. Node 22+ is required and CI covers Node 22/24. First release archival, external MCP and real auth/server lifecycle tests remain pending.
+Complete the planner/blackboard/command path before Modded Client work. Request, lifecycle and translation boundaries are isolated; production strategy injection and turn coordination await approval of [the design](docs/strategic-planner-injection-design.md). Cancellation tests currently guarantee diagnostic isolation, not suppression of late-plan execution. See [TODO.md](TODO.md) for remaining work and [manual testing](docs/manual-testing-guide.md) for pending live checks.
+
+Mineflayer remains the production default. Node 22+ is required; CI covers Node 22/24. Follow/path movement must not dig or place blocks. Conventions and validation commands are in [eslint.config.js](eslint.config.js), [tsconfig.json](tsconfig.json), and [test/README.md](test/README.md).

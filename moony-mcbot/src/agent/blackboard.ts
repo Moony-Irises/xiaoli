@@ -11,12 +11,18 @@ import {
   StrategicDirective
 } from "./types.js";
 
+function toIsoTimestamp(timestamp: number): string {
+  const date = new Date(timestamp);
+  return Number.isNaN(date.getTime()) ? new Date(0).toISOString() : date.toISOString();
+}
+
 export class AgentBlackboard {
   private selfState: Record<string, unknown> = {};
   private perception: Record<string, unknown> = {};
   private runtimeState: AgentRuntimeState = "idle";
   private readonly recentEvents: AgentEvent[] = [];
   private readonly executionEvents: AgentExecutionEvent[] = [];
+  private readonly observableEvents: AgentExecutionEvent[] = [];
   private readonly timers = new Map<string, AgentTimer>();
   private readonly actionQueue: StrategicAction[] = [];
   private activeDirective: StrategicDirective | null = null;
@@ -48,6 +54,15 @@ export class AgentBlackboard {
     if (this.recentEvents.length > this.maxRecentEvents) {
       this.recentEvents.splice(0, this.recentEvents.length - this.maxRecentEvents);
     }
+    if (event.type !== "tick" && event.type !== "perception_updated") {
+      this.recordObservableEvent({
+        id: event.id,
+        timestamp: toIsoTimestamp(event.createdAt),
+        type: event.type,
+        priority: event.priority,
+        payload: event.payload
+      });
+    }
     this.updatedAt = Date.now();
   }
 
@@ -59,7 +74,25 @@ export class AgentBlackboard {
     if (this.executionEvents.length > 20) {
       this.executionEvents.splice(0, this.executionEvents.length - 20);
     }
+    this.recordObservableEvent(event);
     this.updatedAt = Date.now();
+  }
+
+  rawExecutionEvents(): AgentExecutionEvent[] {
+    return this.executionEvents.map((event) => ({ ...event, payload: { ...event.payload } }));
+  }
+
+  observableExecutionEvents(): AgentExecutionEvent[] {
+    return this.observableEvents.map((event) => ({ ...event, payload: { ...event.payload } }));
+  }
+
+  private recordObservableEvent(event: AgentExecutionEvent): void {
+    // Preserve recording order even when timestamps tie or the system clock moves backwards.
+    if (this.observableEvents.some((existing) => existing.id === event.id)) return;
+    this.observableEvents.push({ ...event, payload: { ...event.payload } });
+    if (this.observableEvents.length > 20) {
+      this.observableEvents.splice(0, this.observableEvents.length - 20);
+    }
   }
 
   setDirective(directive: StrategicDirective | null): void {
@@ -155,7 +188,7 @@ export class AgentBlackboard {
       selfState: { ...this.selfState },
       perception: { ...this.perception },
       recentEvents: [...this.recentEvents],
-      executionEvents: this.executionEvents.map((event) => ({ ...event, payload: { ...event.payload } })),
+      executionEvents: this.rawExecutionEvents(),
       timers: [...this.timers.values()].sort((a, b) => a.dueAt - b.dueAt),
       queuedActions: [...this.actionQueue],
       activeDirective: this.activeDirective,
