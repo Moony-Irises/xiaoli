@@ -150,7 +150,7 @@ MCP 和 Web 都只调用 `Skill / Action Dispatcher`，不能各自实现一套�
 1. 让黑板接管 active task、goal、milestone 和 action queue；本轮已完成。
 2. 让旧 Agent 工具只读写黑板，不再直接维护重复 Map；任务 timeout timer、executor tick 冷却门、planner 冷却判定、最近任务历史、玩家/地点与共享基线状态、领地配置及 presence/警告协调已完成这一小步收口，战略目标、领地具体效果适配、planner 轮次编排/执行仍待迁移。
 3. 将 `StrategicAction -> SkillInvocation` 和执行结果事件接通；`HierarchicalAgentRuntime` 负责 Skill 编译、绑定和 active 状态，执行层发布 `task_finished` / `task_failed`，离线接线回归已覆盖该链路。
-4. 让 planner 成为可注入的 Strategic Layer。请求构造、上下文投影和响应解析已迁入 `OpenAiAgentPlanner`，单次请求生命周期已迁入 `planner-request-runner.ts`，计划到 `StrategicDirective` 的纯翻译已迁入 `plan-to-directive.ts`；调用层通过内部 `AgentPlanRequester` 组合，传输、请求生命周期和翻译均可独立离线测试。生产仍使用固定默认实现，完整轮次协调和已有 `StrategicPlanner` 的生产接线尚未迁移。[生产注入提案](strategic-planner-injection-design.md) 已列出完整决策返回、单次应用、兼容规则和取消后的执行门控，待确认；请求交错回归目前只证明诊断隔离，不能证明迟到计划不会执行。
+4. 让 planner 成为可注入的 Strategic Layer。请求构造、上下文投影和响应解析已迁入 `OpenAiAgentPlanner`，单次请求生命周期已迁入 `planner-request-runner.ts`，计划到 `StrategicDirective` 的纯翻译已迁入 `plan-to-directive.ts`；`DefaultAgentPlanningStrategy` 和 `AgentPlanningTurnCoordinator` 已接入 MCP、Web、自动战略 pass，完整决策返回、单次应用和执行前失效复核已有离线接线回归。旧 `StrategicPlanner` 保留兼容接口，真实 API/游戏证据和后续删除旧 executor queue 仍待完成。[生产注入设计](strategic-planner-injection-design.md) 记录当前边界。
 5. 删除旧 executor queue 和同步桥，保留兼容查询字段一段时间。
 
 完成标志是 `agent.framework.status`、`agent.trace.summary` 和实际执行状态来自同一份黑板数据。

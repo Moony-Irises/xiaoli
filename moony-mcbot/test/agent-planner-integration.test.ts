@@ -133,6 +133,39 @@ test("MCP planner requests preserve diagnostics, projection and the skill execut
 
   try {
     await registerActionTools(server, registry);
+    await t.test("a cancelled request cannot apply a late plan even when transport ignores abort", async (t) => {
+      const botId = "planner-cancelled-late";
+      await configureBot(botId, "manual", ["interact.eat"], 3);
+      let finishResponse: ((response: Response) => void) | undefined;
+      let markStarted: (() => void) | undefined;
+      const started = new Promise<void>((resolve) => { markStarted = resolve; });
+      const response = new Promise<Response>((resolve) => { finishResponse = resolve; });
+      t.mock.method(globalThis, "fetch", async () => {
+        assert.ok(markStarted);
+        markStarted();
+        return response;
+      });
+      const pending = invoke("agent.runOnce", { botId, userInstruction: "Eat later." });
+      await started;
+      const cleared = await invoke("agent.goal.clear", { botId });
+      assert.equal(cleared.isError, undefined);
+      assert.ok(finishResponse);
+      finishResponse(new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({
+        intent: "execute_skill", speak: "Ready.",
+        directive: { goal: "Old goal", actions: [{ kind: "eat_food" }] }
+      }) } }] }), { status: 200 }));
+
+      const result = await pending;
+      assert.equal(result.isError, true);
+      assert.match(result.content[0]?.text ?? "", /cancelled/);
+      assert.deepEqual((await readFramework(botId)).queuedActions, []);
+      const state = getAgentStatusForDebug(botId);
+      assert.equal(state.strategicGoal, null);
+      assert.equal(state.lastPlanAt, null);
+      assert.equal((state.lastPlannerRequest as { state: string }).state, "cancelled");
+      assert.equal(adapters.get(botId)?.eatCount, 0);
+    });
+
     await t.test("no_action updates diagnostics and uses only the projected context", async () => {
       const botId = "planner-no-action";
       await configureBot(botId);

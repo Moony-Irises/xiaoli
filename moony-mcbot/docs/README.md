@@ -27,7 +27,7 @@
 - [采矿 Adapter 迁移](mining-adapter-migration-design.md)：单块采矿安全边界和批量迁移前置条件。
 - [持久化与退出生命周期](persistence-lifecycle-design.md)：原子写入、配置重载、请求/队列和 shutdown 顺序。
 - [Planner 上下文投影](planner-context-projection-design.md)：云端字段白名单和本地隐私边界。
-- [Strategic Layer 生产注入提案](strategic-planner-injection-design.md)：待确认的完整决策返回、轮次协调和迟到结果拦截方案。
+- [Strategic Layer 生产注入设计](strategic-planner-injection-design.md)：已完成第一阶段生产接线，记录策略、轮次协调、失效复核和后续兼容边界。
 - [Tool / Skill Catalog](tool-skill-catalog-design.md)：工具元数据与注册迁移设计。
 - [Skill 权限策略](skill-permission-policy.md)：默认 Agent allowlist 与四项已知权限缺口。
 

@@ -1207,9 +1207,9 @@ hi小狸
 5. 用 `agent.framework.status` 查看 `snapshot.executionEvents`，再用 `agent.events.tail` 和 `agent.trace.summary` 对照；`planner_requested`、`planner_result` 和对应 Skill 的 `task_finished` 或 `task_failed` 应在三处使用同一组可观察事件。`snapshot.recentEvents` 是内部规范化输入流，可能额外包含感知刷新，不作为三处调试出口的唯一依据。
 6. 若请求失败，保留 `lastPlannerRequest` 和原始错误。未结束冷却时再次调用应提示 `cooling down`；失败请求不能伪报计划成功。最后恢复原模式，按第 10 节清理目标。
 
-没有真实服务器或 API 时，只需开发者执行 `npm test -- test/openai-agent-planner.test.ts test/planner-request-runner.test.ts test/agent-plan-to-directive.test.ts test/agent-planner-integration.test.ts`；它使用隔离目录、临时本机模型服务和模拟客户端，不读取正式账号。
+没有真实服务器或 API 时，只需开发者执行 `npm test -- test/openai-agent-planner.test.ts test/planner-request-runner.test.ts test/agent-plan-to-directive.test.ts test/agent-planner-integration.test.ts test/agent-planning-strategy.test.ts test/agent-planning-turn.test.ts test/agent-planning-injection-integration.test.ts`；它使用隔离目录、临时本机模型服务和模拟客户端，不读取正式账号。
 
-2026-10-18 补充：请求级离线回归已覆盖超时、信号取消、失效后迟到回复、同 Bot 请求交错及多 Bot 隔离。目前只保证旧诊断不覆盖新诊断；“取消后绝不新增动作”还没有完成，不能把这轮测试当作通过证据。完整轮次取消的手测应等 [生产注入提案](strategic-planner-injection-design.md) 落地后再补，届时使用受控模型回复验证目标、队列和聊天均未新增，不需要现在人为制造云端延迟。
+2026-10-18 补充：请求级和完整轮次离线回归已覆盖超时、信号取消、失效后迟到回复、同 Bot 请求交错、多 Bot 隔离、配置重载、shutdown 和异步聊天；生产协调器已接入，取消后的旧结果不会新增目标、队列或计划发言。真实 API 和游戏仍需按本节第 1-6 步确认，离线测试不等于服务器执行证据。
 
 ## 10. 清理测试状态
 

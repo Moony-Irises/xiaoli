@@ -1,11 +1,12 @@
 ---
-type: test
+type: refactor
 scope: runtime
 audience: developer
-summary: 补齐规划请求取消与交错回归并明确 Strategic Layer 生产注入提案
+summary: 接入可注入 Strategic Layer 并阻止失效规划产生副作用
 breaking: false
 demo_ready: false
 tests:
+  - npm test -- test/agent-planning-strategy.test.ts test/agent-planning-turn.test.ts test/agent-planning-injection-integration.test.ts
   - npm test -- test/planner-request-runner.test.ts test/ai-request-lifecycle.test.ts
   - npm run lint
   - npm run typecheck
@@ -14,7 +15,14 @@ tests:
   - npm run validate:releases
   - git diff --check
 artifacts:
-  - test/planner-request-runner.test.ts
+  - src/agent/planning-strategy.ts
+  - src/agent/planning-turn-coordinator.ts
+  - src/agent/planner-request-runner.ts
+  - src/tools/action-tools.ts
+  - src/main.ts
+  - test/agent-planning-strategy.test.ts
+  - test/agent-planning-turn.test.ts
+  - test/agent-planning-injection-integration.test.ts
   - docs/strategic-planner-injection-design.md
   - docs/README.md
   - docs/architecture-convergence-roadmap.md
@@ -28,12 +36,12 @@ artifacts:
 
 ## What changed
 
-增加五组请求边界测试，覆盖超时/普通错误原样传递、实际取消、失效后的迟到完成、同 Bot 交错及多 Bot 隔离。补充生产策略注入提案，明确原始计划、战略指令、里程碑和兼容步骤的保留方式，以及完整轮次的生命周期所有权。
+增加默认规划策略和完整轮次协调器，并让 MCP、Web、自动战略 pass 复用同一注入入口。协调器在目标更新、动作入队、计划发言和 executor 启动前复核请求作用域；配置重载、清空目标和 shutdown 会使轮次失效。补充单元与接线测试，覆盖超时/普通错误原样传递、实际取消、忽略取消后的迟到回复、同 Bot 交错、多 Bot 隔离、异步聊天和配置生命周期。
 
 ## Why it matters
 
-旧 StrategicPlanner 只返回指令，不能直接承载完整生产规划结果。提案给出单次应用和执行前有效性检查的迁移边界；回归同时明确当前生命周期只阻止旧诊断覆盖，上游忽略取消时仍会返回迟到计划。
+旧 StrategicPlanner 只返回指令，不能直接承载完整生产规划结果。新策略返回原始计划、战略指令和兼容步骤，协调器只应用一次并保留现有入口返回；上游忽略取消时，迟到计划会在副作用边界前被拒绝。
 
 ## Demo posture / limitations
 
-这次不代表生产策略注入已经完成，也不代表取消后不会执行迟到计划；共享接口和游戏行为未改，方案待确认。真实 API 与服务器回归仍待手动测试，不是 install demo、已发布版本或 GA。
+这次不代表旧 StrategicPlanner 接口已删除，也不代表云端模型或游戏服务器已经确认执行；真实 API 与服务器回归仍待手动测试。这不是 install demo、已发布版本或 GA。

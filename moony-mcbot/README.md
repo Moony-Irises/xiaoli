@@ -4,7 +4,7 @@
 
 项目当前是面向原版/协议兼容服务器的本地 Minecraft 同伴 bot 成熟原型，正在从旧工具编排层收敛到统一 Agent、Action Dispatcher 与 ClientAdapter 运行链；真实整合包客户端 Bridge 尚未实现，也还不是经过完整真实服务器回归的稳定发行版。当前风险、应保留模块和实施顺序见 [2026-07-31 全项目架构与实现审计](docs/project-audit-2026-07-31.md)。
 
-当前短期社交与人格运行态由 `SocialRuntimeStateStore` 按 Bot 隔离管理，包含最近互动、主动发言时间、回复上下文、心情和场景台词冷却。它只存在于进程内，不属于共享记忆或持久化配置；具体聊天、self-guard 和记忆编排仍在 `action-tools.ts`。Agent 的 planner 请求和计划到指令翻译已有独立边界，但完整 Strategic Layer 生产注入与轮次协调仍在迁移中。Agent 调试状态的 framework、tail、trace 和 Web 事件出口已共用有界可观察视图，内部 `recentEvents` 仍保留给 Reactive 和 planner 输入。
+当前短期社交与人格运行态由 `SocialRuntimeStateStore` 按 Bot 隔离管理，包含最近互动、主动发言时间、回复上下文、心情和场景台词冷却。它只存在于进程内，不属于共享记忆或持久化配置；具体聊天、self-guard 和记忆编排仍在 `action-tools.ts`。Agent 的 planner 请求、计划到指令翻译和生产规划轮次已有独立边界，但旧 `StrategicPlanner` 兼容入口和执行队列仍在后续收敛中。Agent 调试状态的 framework、tail、trace 和 Web 事件出口已共用有界可观察视图，内部 `recentEvents` 仍保留给 Reactive 和 planner 输入。
 
 聊天监听配置与运行资源也已分离：ConfigStore 保存开关和规则，`ChatListenerLifecycle` 按 Bot 管理实际订阅，并统一拥有监听 watchdog。消息处理、去重、重连协调和具体回复仍由 `action-tools.ts` 编排，外部 MCP、Web 和游戏行为不变。
 
@@ -74,8 +74,7 @@
 - `movement.walk` 的每 Bot 停止 timeout 已由 `src/runtime/walk-timer-lifecycle.ts` 统一管理；Agent/MCP 入口和进程关闭保留原创建、到期与清理顺序，停止移动和 movement intent 副作用仍由 `action-tools.ts` 编排
 - Agent executor 的每 Bot interval 与串行运行 tail 已由 `src/runtime/agent-executor-lifecycle.ts` 统一管理；任务 timeout timer、executor tick 冷却门、planner 冷却判定、task progress 节流、战略生命周期去重、库存变化事件基线和空闲社交尝试冷却由 `HierarchicalAgentRuntime` 管理，`lastPlanAt` 仅保留为诊断镜像；状态、配置删除和退出 flush 保持原不可取消与单次快照语义，planner 请求/工具执行、生命周期提示、完成汇报、库存事件发布和具体空闲社交副作用仍由 `action-tools.ts` 编排
 - Agent 最近任务历史已由 `src/runtime/agent-task-history-store.ts` 按 Bot 管理，读取返回副本并稳定保留最近 20 条；任务结算和 `memory.taskHistory` 持久化组合仍由 `action-tools.ts` 负责
-- Agent 模型请求已抽到 `src/agent/openai-agent-planner.ts`，单次请求生命周期已抽到 `src/agent/planner-request-runner.ts`，计划到战略指令的纯翻译已抽到 `src/agent/plan-to-directive.ts`；离线接线回归覆盖 MCP → 黑板 → Skill → 命令 → 模拟客户端。完整规划轮次编排和 Strategic Layer 注入仍待迁移，详见 [Agent 模块](src/agent/README.md#规划请求边界)
-- [Strategic Layer 生产注入提案](docs/strategic-planner-injection-design.md) 已明确完整决策、轮次协调和迟到计划的执行门控，尚待确认；本轮请求取消/交错测试只验证诊断隔离，未改变生产执行语义
+- Agent 模型请求已抽到 `src/agent/openai-agent-planner.ts`，单次请求生命周期已抽到 `src/agent/planner-request-runner.ts`，计划到战略指令的纯翻译已抽到 `src/agent/plan-to-directive.ts`；`DefaultAgentPlanningStrategy` 与 `AgentPlanningTurnCoordinator` 已让 MCP、Web、自动规划共用一轮次，离线接线回归覆盖 MCP → 黑板 → Skill → 命令 → 模拟客户端。失效后的迟到计划不会更新目标、入队或发言；旧 `StrategicPlanner` 接口仍保留，真实 API/游戏证据仍待手测，详见 [Agent 模块](src/agent/README.md#规划请求边界) 与 [注入设计](docs/strategic-planner-injection-design.md)
 - Agent 玩家/地点工作集与共享基线已由 `src/memory/agent-game-memory-state-store.ts` 按 Bot 管理，统一复制、严格较新合并、跨 Bot 快照、清空和删除；输入归一化、时间戳、旧配置投影与共享文件队列仍由 `action-tools.ts` 编排
 - Agent 领地配置已由 `src/config/territory-config-store.ts` 按 Bot 管理；`src/runtime/territory-runtime.ts` 组合玩家 presence、短期状态和警告/升级判定，并固定 prune、状态写回与副作用 hook 顺序；配置/记忆/快照采集及聊天、事件、决斗 hook 仍由 `action-tools.ts` 提供
 - `chat.send` / `chat.sendVerified` 已开始走 adapter/runtime 统一发送入口，`chat.sendVerified` 的服务器回显等待仍沿用原生 mineflayer 事件

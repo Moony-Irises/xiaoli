@@ -14,6 +14,7 @@ import { BotRegistry } from "./runtime/bot-registry.js";
 import { log } from "./logger.js";
 import { readDefaultBotBootstrapFromEnv } from "./bootstrap/default-bot.js";
 import { startDebugWebServer } from "./debug/debug-server.js";
+import { DefaultAgentPlanningStrategy } from "./agent/planning-strategy.js";
 import {
   flushSharedChatMemory,
   migrateSharedChatMemoryState
@@ -138,7 +139,7 @@ async function main(): Promise<void> {
   try {
     registerBotTools(server, registry);
     await migrateSharedChatMemoryAtStartup();
-    await registerActionTools(server, registry);
+    await registerActionTools(server, registry, { agentPlanningStrategy: new DefaultAgentPlanningStrategy() });
     debugServer = startDebugWebServer(registry);
 
     await bootstrapDefaultBot(registry);

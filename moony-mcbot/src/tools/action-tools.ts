@@ -84,6 +84,7 @@ import {
   MineflayerMiningClient
 } from "../runtime/mineflayer-mining.js";
 import {
+  AiRequestError,
   classifyAiRequestState,
   createRunningAiRequestStatus,
   finishAiRequestStatus,
@@ -124,14 +125,9 @@ import {
 } from "../config/territory-config-store.js";
 import { PersistedChatConfigRepository } from "../config/persisted-chat-config-repository.js";
 import { extractAiText, summarizeEmptyAiChoice } from "../runtime/openai-response-text.js";
-import {
-  OpenAiAgentPlanner,
-  type AgentPlan,
-  type AgentPlanRequester,
-  type AgentPlanStep
-} from "../agent/openai-agent-planner.js";
-import { buildDirectiveFromPlan } from "../agent/plan-to-directive.js";
-import { runAgentPlannerRequest } from "../agent/planner-request-runner.js";
+import type { AgentPlanStep } from "../agent/openai-agent-planner.js";
+import { DefaultAgentPlanningStrategy, type AgentPlanningStrategy } from "../agent/planning-strategy.js";
+import { AgentPlanningTurnCoordinator } from "../agent/planning-turn-coordinator.js";
 import { drainPromiseQueue } from "../runtime/promise-queue.js";
 import { InvalidatableTaskQueue } from "../runtime/invalidatable-task-queue.js";
 import {
@@ -294,7 +290,7 @@ const chatAiTaskQueue = new InvalidatableTaskQueue({
     });
   }
 });
-const agentPlanner: AgentPlanRequester = new OpenAiAgentPlanner();
+const agentPlanningCoordinators = new WeakMap<BotRegistry, AgentPlanningTurnCoordinator<AgentStateSnapshot>>();
 const agentConfigStore = new AgentConfigStore({
   createDefaults: () => ({
     plannerApiBaseUrl: process.env.MCBOT_AI_API_BASE_URL?.trim() || "https://api.openai.com/v1",
@@ -949,6 +945,7 @@ function replacePersistedSelfGuardConfig(
 }
 
 function replacePersistedAgentConfig(botId: string, persisted: PersistedAgentConfig): void {
+  invalidatePlannerRequest(botId);
   territoryConfigStore.delete(botId);
   territoryRuntime.clearBot(botId);
   const replaced = agentConfigStore.replace(botId, persisted);
@@ -962,7 +959,7 @@ function replacePersistedAgentConfig(botId: string, persisted: PersistedAgentCon
 }
 
 function clearRemovedAgentConfig(botId: string): void {
-  plannerRequestLifecycle.invalidate(botId);
+  invalidatePlannerRequest(botId);
   stopAgentExecutorLoop(botId);
   clearHierarchicalTaskTimer(botId);
   setStrategicGoal(botId, null);
@@ -976,6 +973,16 @@ function clearRemovedAgentConfig(botId: string): void {
   agentTaskHistoryStore.delete(botId);
   territoryConfigStore.delete(botId);
   territoryRuntime.clearBot(botId);
+}
+
+function invalidatePlannerRequest(botId: string): void {
+  const status = agentConfigStore.get(botId)?.lastPlannerRequest;
+  if (status && plannerRequestLifecycle.hasActive(botId)) {
+    agentConfigStore.setLastPlannerRequest(botId, finishAiRequestStatus(status, "cancelled", {
+      error: "Agent planning turn cancelled"
+    }));
+  }
+  plannerRequestLifecycle.invalidate(botId);
 }
 
 function clearRemovedSelfGuardConfig(botId: string): void {
@@ -4147,7 +4154,7 @@ export async function debugRunAgentOnce(
 }
 
 export function debugClearStrategicGoal(botId: string): Record<string, unknown> {
-  plannerRequestLifecycle.cancel(botId);
+  invalidatePlannerRequest(botId);
   setStrategicGoal(botId, null);
   queuePersistChatState();
   return {
@@ -4506,123 +4513,73 @@ function buildAutonomousPlanningInstruction(config: AgentConfig, stateSnapshot: 
   ].join(" ");
 }
 
+function createAgentPlanningCoordinator(
+  registry: BotRegistry,
+  strategy: AgentPlanningStrategy
+): AgentPlanningTurnCoordinator<AgentStateSnapshot> {
+  return new AgentPlanningTurnCoordinator(strategy, plannerRequestLifecycle, {
+    getRuntime: (botId) => {
+      hierarchicalAgents.syncBotIds(registry.listBotIds());
+      return hierarchicalAgents.ensure(botId);
+    },
+    syncState: (botId) => syncHierarchicalAgentState(botId, registry),
+    captureState: (botId) => buildAgentStateSnapshot(botId, registry),
+    updateDiagnostics: (botId, update) => { agentConfigStore.updateRuntimeDiagnostics(botId, update); },
+    updateGoal: (botId, source, decision) => {
+      if (!decision.directive) return;
+      updateStrategicGoal(
+        botId, decision.directive.goal, source, decision.directive.rationale,
+        Array.isArray(decision.plan.directive?.milestones) ? decision.plan.directive.milestones : undefined,
+        typeof decision.plan.directive?.currentMilestoneIndex === "number" ? decision.plan.directive.currentMilestoneIndex : undefined
+      );
+    },
+    sendSpeech: (botId, text) => sendRuntimeChat(botId, registry, text),
+    enqueueSteps: enqueueAgentPlanSteps,
+    startExecutor: (botId) => startAgentExecutorLoop(botId, registry),
+    finishTurn: (botId, source, result) => {
+      setAgentRuntimeState(botId, getActiveAgentTask(botId) || (source === "strategic_pass" && result !== "no_action")
+        ? "task_running" : "idle");
+      queuePersistChatState();
+    }
+  });
+}
+
+function getAgentPlanningCoordinator(registry: BotRegistry): AgentPlanningTurnCoordinator<AgentStateSnapshot> {
+  let coordinator = agentPlanningCoordinators.get(registry);
+  if (!coordinator) {
+    coordinator = createAgentPlanningCoordinator(registry, new DefaultAgentPlanningStrategy());
+    agentPlanningCoordinators.set(registry, coordinator);
+  }
+  return coordinator;
+}
+
 async function runAgentPlanningTurn(
   botId: string,
   registry: BotRegistry,
   cfg: AgentConfig,
   userInstruction: string,
   requester: string | null,
-  source: "manual" | "strategic_pass"
-): Promise<{
-  plan: AgentPlan;
-  plannedSteps: AgentPlanStep[];
-  executionResult: string;
-  stateSnapshot: AgentStateSnapshot;
-}> {
-  const now = Date.now();
-  hierarchicalAgents.syncBotIds(registry.listBotIds());
-  const runtime = hierarchicalAgents.ensure(botId);
-  runtime.syncPlannerTimestamp(cfg.lastPlanAt);
-  const cooldownRemaining = runtime.plannerCooldownRemaining(now, cfg.planCooldownMs);
-  if (cooldownRemaining > 0) {
-    throw new Error(`Agent planner is cooling down (${cooldownRemaining}ms remaining)`);
-  }
-
-  syncHierarchicalAgentState(botId, registry);
-  runtime.ingestEvent({
-    id: `evt_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-    type: "planner_requested",
-    priority: "normal",
-    createdAt: Date.now(),
-    payload: {
-      requester,
-      userInstruction,
-      source
-    }
-  });
-
-  const stateSnapshot = buildAgentStateSnapshot(botId, registry);
+  source: "manual" | "strategic_pass",
+  reportFailure = false
+) {
   const plannerTimeoutMs = resolveAiRequestTimeout(
     process.env.MCBOT_PLANNER_TIMEOUT_MS ?? process.env.MCBOT_AI_REQUEST_TIMEOUT_MS,
     15000
   );
-  const plan = await runAgentPlannerRequest({
+  return getAgentPlanningCoordinator(registry).run({
     botId,
     config: cfg,
     userInstruction,
-    stateSnapshot,
+    requester,
+    source,
     timeoutMs: plannerTimeoutMs,
-    requester: agentPlanner,
-    lifecycle: plannerRequestLifecycle
+    onFailure: reportFailure ? (error) => {
+      setAgentRuntimeState(botId, getActiveAgentTask(botId) ? "task_running" : "idle");
+      agentConfigStore.updateRuntimeDiagnostics(botId, {
+        lastPlanResult: error instanceof Error ? error.message : String(error)
+      });
+    } : undefined
   });
-  const plannerTimestamp = runtime.markPlannerCompleted(now);
-  agentConfigStore.updateRuntimeDiagnostics(botId, {
-    lastPlanAt: plannerTimestamp,
-    lastPlanSummary: JSON.stringify(plan)
-  });
-  const translated = buildDirectiveFromPlan(botId, userInstruction, plan, cfg.maxPlanSteps);
-  const plannedSteps = translated.leftoverSteps;
-
-  runtime.ingestEvent({
-    id: `evt_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-    type: "planner_result",
-    priority: "normal",
-    createdAt: Date.now(),
-    payload: {
-      source,
-      hasDirective: !!translated.directive,
-      translatedActionCount: translated.directive?.actions.length ?? 0,
-      leftoverStepCount: plannedSteps.length
-    }
-  });
-
-  let executionResult = "no_action";
-  if (translated.directive) {
-    updateStrategicGoal(
-      botId,
-      translated.directive.goal,
-      source,
-      translated.directive.rationale,
-      Array.isArray(plan.directive?.milestones) ? plan.directive?.milestones : undefined,
-      typeof plan.directive?.currentMilestoneIndex === "number" ? plan.directive.currentMilestoneIndex : undefined
-    );
-    runtime.applyDirective(translated.directive);
-    executionResult = `applied_directive_${translated.directive.actions.length}_action(s)`;
-  }
-
-  if (plan.speak && !translated.directive && plannedSteps.length === 0) {
-    try {
-      await sendRuntimeChat(botId, registry, plan.speak);
-    } catch {
-      // ignore speech failure
-    }
-  }
-
-  if (plannedSteps.length > 0) {
-    const disallowed = plannedSteps.find((step) => !cfg.allowedTools.includes(step.tool));
-    if (disallowed) {
-      throw new Error(`Tool '${disallowed.tool}' is not allowed for agent`);
-    }
-    enqueueAgentPlanSteps(botId, plannedSteps);
-    startAgentExecutorLoop(botId, registry);
-    executionResult =
-      executionResult === "no_action"
-        ? `enqueued_${plannedSteps.length}_step(s)`
-        : `${executionResult};enqueued_${plannedSteps.length}_step(s)`;
-  } else if (plan.intent === "execute_skill" && !translated.directive) {
-    throw new Error("Agent plan missing executable step");
-  }
-
-  agentConfigStore.updateRuntimeDiagnostics(botId, { lastPlanResult: executionResult });
-  setAgentRuntimeState(botId, getActiveAgentTask(botId) ? "task_running" : "idle");
-  queuePersistChatState();
-
-  return {
-    plan,
-    plannedSteps,
-    executionResult,
-    stateSnapshot
-  };
 }
 
 export async function executeAgentToolCall(
@@ -5904,11 +5861,11 @@ async function runAgentExecutorTick(botId: string, registry: BotRegistry): Promi
       if (instruction) {
         const result = await runAgentPlanningTurn(botId, registry, cfg, instruction, null, "strategic_pass");
         if (result.executionResult !== "no_action") {
-          setAgentRuntimeState(botId, "task_running");
           return;
         }
       }
-    } catch {
+    } catch (error) {
+      if (error instanceof AiRequestError && error.kind === "cancelled") return;
       // keep idle policy fallback alive
     }
   }
@@ -7396,7 +7353,19 @@ function detachChatListener(botId: string): void {
   chatListenerLifecycle.stop(botId);
 }
 
-export async function registerActionTools(server: McpServer, registry: BotRegistry): Promise<void> {
+export interface ActionToolRegistrationOptions {
+  agentPlanningStrategy?: AgentPlanningStrategy;
+}
+
+export async function registerActionTools(
+  server: McpServer,
+  registry: BotRegistry,
+  options: ActionToolRegistrationOptions = {}
+): Promise<void> {
+  if (options.agentPlanningStrategy) {
+    for (const botId of registry.listBotIds()) invalidatePlannerRequest(botId);
+    agentPlanningCoordinators.set(registry, createAgentPlanningCoordinator(registry, options.agentPlanningStrategy));
+  }
   ensurePromptProfileLoaded();
   await runStartupLifecycle({
     loadPersistedState: async () => {
@@ -7887,7 +7856,7 @@ export async function registerActionTools(server: McpServer, registry: BotRegist
         if (args.maxToolCallsPerTurn !== undefined) cfg.maxToolCallsPerTurn = args.maxToolCallsPerTurn;
         if (args.allowProactiveAction !== undefined) cfg.allowProactiveAction = args.allowProactiveAction;
         if (args.allowedTools !== undefined) cfg.allowedTools = args.allowedTools;
-        plannerRequestLifecycle.cancel(resolvedBotId);
+        invalidatePlannerRequest(resolvedBotId);
         queuePersistChatState();
         if (cfg.enabled && cfg.mode !== "manual") {
           startAgentExecutorLoop(resolvedBotId, registry);
@@ -8992,7 +8961,7 @@ export async function registerActionTools(server: McpServer, registry: BotRegist
     async ({ botId }): Promise<ToolResponse> => {
       try {
         const resolvedBotId = resolveBotId(registry, botId);
-        plannerRequestLifecycle.cancel(resolvedBotId);
+        invalidatePlannerRequest(resolvedBotId);
         setStrategicGoal(resolvedBotId, null);
         queuePersistChatState();
         return ok(
@@ -9033,35 +9002,38 @@ export async function registerActionTools(server: McpServer, registry: BotRegist
       userInstruction: z.string().min(1),
       requester: optionalTrimmedString
     },
-	    async ({ botId, userInstruction, requester }): Promise<ToolResponse> => {
-	      try {
-	        const resolvedBotId = resolveBotId(registry, botId);
-	        const cfg = getOrCreateAgentConfig(resolvedBotId);
+    async ({ botId, userInstruction, requester }): Promise<ToolResponse> => {
+      let planningStarted = false;
+      try {
+        const resolvedBotId = resolveBotId(registry, botId);
+        const cfg = getOrCreateAgentConfig(resolvedBotId);
         if (!cfg.enabled) {
           return fail("Agent is disabled. Enable it via agent.configure first.");
         }
 
         const actor = requester?.trim() || cfg.owner || "";
-	        if (cfg.whitelist.size > 0 && actor && !cfg.whitelist.has(actor)) {
-	          return fail(`Requester '${actor}' is not in agent whitelist`);
-	        }
+        if (cfg.whitelist.size > 0 && actor && !cfg.whitelist.has(actor)) {
+          return fail(`Requester '${actor}' is not in agent whitelist`);
+        }
 
-	        setAgentRuntimeState(resolvedBotId, "task_running");
-	        recordAgentEvent(resolvedBotId, "wake_command", "normal", {
-	          requester: actor || null,
-	          userInstruction
-	        });
-	        const { plan, plannedSteps, executionResult, stateSnapshot } = await runAgentPlanningTurn(
-	          resolvedBotId,
-	          registry,
-	          cfg,
-	          userInstruction,
-	          actor || null,
-	          "manual"
-	        );
+        setAgentRuntimeState(resolvedBotId, "task_running");
+        recordAgentEvent(resolvedBotId, "wake_command", "normal", {
+          requester: actor || null,
+          userInstruction
+        });
+        planningStarted = true;
+        const { plan, plannedSteps, executionResult, stateSnapshot } = await runAgentPlanningTurn(
+          resolvedBotId,
+          registry,
+          cfg,
+          userInstruction,
+          actor || null,
+          "manual",
+          true
+        );
 
-	        return ok(
-	          asText({
+        return ok(
+          asText({
             botId: resolvedBotId,
             requester: actor || null,
             plan,
@@ -9072,13 +9044,15 @@ export async function registerActionTools(server: McpServer, registry: BotRegist
         );
       } catch (error) {
         try {
-          const resolvedBotId = resolveBotId(registry, botId);
-          setAgentRuntimeState(resolvedBotId, getActiveAgentTask(resolvedBotId) ? "task_running" : "idle");
-          agentConfigStore.updateRuntimeDiagnostics(resolvedBotId, {
-            lastPlanResult: error instanceof Error ? error.message : String(error)
-          });
-        } catch {
-          // ignore
+          if (!planningStarted) {
+            const resolvedBotId = resolveBotId(registry, botId);
+            setAgentRuntimeState(resolvedBotId, getActiveAgentTask(resolvedBotId) ? "task_running" : "idle");
+            agentConfigStore.updateRuntimeDiagnostics(resolvedBotId, {
+              lastPlanResult: error instanceof Error ? error.message : String(error)
+            });
+          }
+        } catch (_cleanupError) {
+          // Preserve the original tool error when best-effort cleanup fails.
         }
         return fail(error instanceof Error ? error.message : String(error));
       }

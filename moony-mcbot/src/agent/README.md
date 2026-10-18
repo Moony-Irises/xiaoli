@@ -12,7 +12,9 @@
 - `skill-catalog.ts`：评估战略动作并编译为工具调用。
 - `openai-agent-planner.ts`：通过内部 `AgentPlanRequester` 边界构造规划请求、筛选上下文并解析模型回复，默认使用现有 OpenAI-compatible 传输。
 - `plan-to-directive.ts`：将已解析的模型计划转换为高层 `StrategicDirective`，并保留未映射旧工具步骤的兼容回退。
-- `planner-request-runner.ts`：管理单次 planner 请求的超时输入、取消信号和成功/失败诊断终态。
+- `planner-request-runner.ts`：管理单次 planner 请求的超时输入、取消信号和成功/失败诊断终态，并向整轮协调器提供有效性作用域。
+- `planning-strategy.ts`：注入模型请求器并返回保留原始计划的完整规划决策。
+- `planning-turn-coordinator.ts`：统一冷却、事件、失效复核、目标/指令应用、兼容步骤和入口返回。
 - `tool-executors.ts`：可离线测试的 Agent 工具执行语义；当前包含进食、转头和限时步行执行器。
 - `runtime.ts`：组织事件、动作选择、Skill 绑定和执行状态。
 
@@ -24,9 +26,9 @@ Agent 周期 tick 的 interval 与按 Bot 串行运行 tail 不由本模块持�
 
 `OpenAiAgentPlanner.plan()` 接收每次请求的配置、指令、本地快照、超时和 `AbortSignal`，返回原有 `AgentPlan`。模块内部应用上下文白名单，再组装既有系统提示、10 个示例和记忆摘要；不持有 Bot、配置 Store、冷却或黑板状态。构造器可注入传输函数，离线测试无需账号或真实 API key。
 
-生产组合使用 `AgentPlanRequester`，目前仍固定构造默认实现；`planner-request-runner.ts` 负责单次请求的生命周期和诊断写回。`plan-to-directive.ts` 负责纯翻译，调用层仍负责冷却、事件、权限、目标更新和执行。原始计划请求边界和 `types.ts` 中接收黑板、返回 `StrategicDirective` 的 `StrategicPlanner` 仍是两个阶段；完整 Strategic Layer 的生产注入和轮次协调尚未完成。
+生产组合使用 `AgentPlanRequester`。`DefaultAgentPlanningStrategy` 组合请求和纯翻译，`AgentPlanningTurnCoordinator` 负责冷却、事件、权限、目标更新、失效复核和执行入口返回；MCP、Web、自动战略 pass 共用它。`types.ts` 中接收黑板、返回 `StrategicDirective` 的旧 `StrategicPlanner` 仍保留兼容入口，尚未替换成完整决策接口。
 
-迁移提案见 [Strategic Layer 生产注入设计](../../docs/strategic-planner-injection-design.md)，尚待确认。现有请求生命周期只门控诊断写入：上游忽略取消时，runner 仍可返回迟到计划；不能据此认定旧计划不会执行。定向回归已覆盖真实信号取消、失效后的迟到完成、同 Bot 请求交错和多 Bot 隔离，执行前有效性检查留待协调器迁移。
+设计和当前边界见 [Strategic Layer 生产注入设计](../../docs/strategic-planner-injection-design.md)。旧 runner 仍保留“上游忽略取消时返回迟到计划”的兼容行为；生产协调器在目标、队列、聊天和 executor 前复核作用域，因此迟到计划不会提交。定向回归覆盖真实信号取消、失效后的迟到完成、同 Bot 请求交错、多 Bot 隔离、配置重载、shutdown 和异步聊天。
 
 响应保持旧规则：读取第一个 choice，支持文本片段、choice text 回退和 JSON 代码围栏，拒绝空文本、坏 JSON 和未知 intent。嵌套动作的完整 schema 校验没有随本次抽取新增。
 
@@ -52,5 +54,5 @@ Agent 周期 tick 的 interval 与按 Bot 串行运行 tail 不由本模块持�
 
 ```powershell
 npm test -- test/agent-blackboard.test.ts test/agent-executor-lifecycle.test.ts test/agent-executor-integration.test.ts test/agent-tool-executors.test.ts test/action-command-set.test.ts test/eat-command-integration.test.ts test/hold-category-command-integration.test.ts test/open-door-command-integration.test.ts test/skill-permission-audit.test.ts test/tool-catalog.test.ts
-npm test -- test/openai-agent-planner.test.ts test/planner-request-runner.test.ts test/ai-request-lifecycle.test.ts test/agent-planner-integration.test.ts
+npm test -- test/openai-agent-planner.test.ts test/planner-request-runner.test.ts test/ai-request-lifecycle.test.ts test/agent-planner-integration.test.ts test/agent-planning-strategy.test.ts test/agent-planning-turn.test.ts test/agent-planning-injection-integration.test.ts
 ```

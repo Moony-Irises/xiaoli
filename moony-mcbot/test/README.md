@@ -33,3 +33,5 @@ Agent 事件视图的离线回归还覆盖框架事件与执行事件合并、`t
 `agent-plan-to-directive.test.ts` 覆盖模型计划的高层动作优先级、旧工具步骤兼容回退、缺参数、动作数量上限和元数据保留；它不调用网络或游戏客户端。
 
 `planner-request-runner.test.ts` 覆盖 planner 请求输入、成功诊断、超时/普通错误对象保留、实际信号取消、失效后迟到完成、同 Bot 新旧请求交错和多 Bot 隔离；它不调用网络或游戏客户端。迟到计划仍会返回是当前行为基线，测试只证明旧诊断不会覆盖新状态，不证明执行已被阻止。待确认的协调器迁移和执行门控见 [注入设计](../docs/strategic-planner-injection-design.md)。
+
+`agent-planning-turn.test.ts` 覆盖完整轮次的冷却、原始计划与里程碑保留、单次应用、权限/执行错误、取消和失效后的无副作用、同 Bot 交错、异步聊天、shutdown 及多 Bot 隔离。`agent-planning-injection-integration.test.ts` 通过真实 MCP 注册、Web debug helper、配置重载和自动 executor 验证同一注入策略的入口复用；使用假策略和隔离适配器，不连接真实模型或游戏。
