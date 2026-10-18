@@ -1,4 +1,4 @@
-# Strategic Layer 生产注入提案
+# Strategic Layer 生产注入设计
 
 状态：第一阶段已实现，第二阶段仍在收口。2026-10-18 已接入默认策略、完整轮次协调和执行前失效检查；公共 MCP/Web/自动规划入口继续兼容。进度见 [路线图阶段 2](architecture-convergence-roadmap.md#阶段-2agent-单一真相源)，测试入口见 [手动测试指南第 9.1 节](manual-testing-guide.md#91-规划请求拆分回归待你方便时测)。
 
@@ -101,3 +101,11 @@ npm test -- test/planner-request-runner.test.ts test/ai-request-lifecycle.test.t
 当前采用“保留旧接口、新增返回完整决策的策略、由一个协调器应用”的迁移方式，并将失效轮次拒绝提交作为行为修正。后续只需继续收口自动规划的停机证据和真实游戏回归。
 
 本方案不增加玩法、不放开工具权限、不实现 Modded Client、不改变聊天人格或共享记忆，也不把整层迁移描述成已经完成。发现的取消后迟到计划风险及权限顺序限制记在 [TODO](../TODO.md)，不在基线测试阶段直接改行为。
+
+## 8. 分层动作执行边界
+
+后续收敛按单个动作推进：`action-tools.ts` 继续同步快照、发布 tick 并轮询任务超时；独立内部执行器接收 Runtime 和当前权限、任务冲突判断、工具调用及结果诊断四个 hooks，负责预览 Skill、权限复核、绑定动作、执行、发布终态并在 `finally` 释放 active action/skill。
+
+保持现有顺序：权限拒绝会消费该动作并发布 normal 优先级的 `task_failed`、返回 `false`；任务冲突保留队首动作且不绑定；工具成功发布 `task_finished`，异常发布 high 优先级的 `task_failed`，两者都返回 `true`。执行期间 active action/skill 保持可观察，后续队列由黑板持有。事件字段、工具参数、诊断文本和两次 Skill 编译的既有行为保持不变。
+
+旧 `tool_call` 兼容步骤已经存在同一黑板队列中，但尚有单独的执行分支，本步继续保留。规划作用域在计划提交完成后关闭；已经入队或开始的动作不因本次抽取获得取消或回滚保证。后续若改变 stop/config/shutdown 对已提交工作的语义，需要单独设计与确认。

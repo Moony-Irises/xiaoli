@@ -4,6 +4,7 @@ export * from "./blackboard.js";
 export * from "./reactive-rules.js";
 export * from "./skill-catalog.js";
 export * from "./tool-executors.js";
+export * from "./runtime-action-executor.js";
 export * from "./plan-to-directive.js";
 export * from "./planning-strategy.js";
 export * from "./planning-turn-coordinator.js";

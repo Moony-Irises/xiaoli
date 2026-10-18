@@ -1211,6 +1211,18 @@ hi小狸
 
 2026-10-18 补充：请求级和完整轮次离线回归已覆盖超时、信号取消、失效后迟到回复、同 Bot 请求交错、多 Bot 隔离、配置重载、shutdown 和异步聊天；生产协调器已接入，取消后的旧结果不会新增目标、队列或计划发言。真实 API 和游戏仍需按本节第 1-6 步确认，离线测试不等于服务器执行证据。
 
+### 9.2 分层动作执行回归（积压，方便时测）
+
+先完成第 9.1 节的停止跟随测试，不需要为本项开放新工具或更换配置文件：
+
+1. 在 Web 的 `State Snapshot` / `agent.framework.status` 展开 `activeAction`、`activeSkill` 和 `queuedActions`。动作尚未执行时在队列；执行期间可能短暂显示 active 状态，停止跟随很快，看不到这个瞬间不算失败。
+2. 等一个 executor 周期后，核对 `task_finished.payload.skill=move.stopFollow`，并检查 active action/skill 已清空、该动作不再排队。游戏内应实际停止；`executed` 和 `task_finished` 都不单独证明服务器已确认。
+3. 若出现 `hierarchical runtime blocked tool '...'`，表示 Skill 没有当前工具权限，预期有 normal 优先级的 `task_failed`，不应有该次客户端动作。记录当前 `allowedTools`，不要为了消除提示直接开放全部权限。
+4. 若出现 `failed ...`，保留 `task_failed.payload.skill` / `lastError`、`lastPlanResult` 和相关 Command History；已绑定的工具执行结束后 active action/skill 应清空。确认下一条安全指令仍可执行。
+5. 尚有 active task 时，部分冲突动作会继续留在队列；先通过正常停止入口结束原任务，再观察它能否执行。当前跟随任务允许 `move.stopFollow` 打断，不需要等跟随自行完成。
+
+本轮已离线验证以上权限、冲突、失败和清理边界。开发者定向命令：`npm test -- test/agent-runtime-action-executor.test.ts test/agent-planner-integration.test.ts`。规划请求的取消保护覆盖计划提交之前；已提交或开始的动作、旧工具兼容步骤没有因本次抽取获得取消或回滚保证。
+
 ## 10. 清理测试状态
 
 停止跟随：

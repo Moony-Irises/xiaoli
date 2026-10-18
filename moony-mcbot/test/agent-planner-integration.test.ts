@@ -7,7 +7,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { BotRegistry } from "../src/runtime/bot-registry.js";
 import type { ActionResult, SelfStateSnapshot } from "../src/runtime/client-adapter.js";
 import type { RuntimeState } from "../src/types.js";
-import type { StrategicAction, StrategicDirective } from "../src/agent/types.js";
+import type { SkillInvocation, StrategicAction, StrategicDirective } from "../src/agent/types.js";
 import {
   getAgentExecutionTraceForDebug,
   getAgentStateSnapshotForDebug,
@@ -40,6 +40,8 @@ interface FrameworkSnapshot {
   executionEvents: { type: string; payload: Record<string, unknown> }[];
   queuedActions: StrategicAction[];
   activeDirective: StrategicDirective | null;
+  activeAction: StrategicAction | null;
+  activeSkill: SkillInvocation | null;
 }
 
 interface Position {
@@ -301,6 +303,63 @@ test("MCP planner requests preserve diagnostics, projection and the skill execut
       assert.deepEqual(framework.queuedActions, []);
       assert.equal(framework.activeDirective, null);
       assert.equal((getAgentStatusForDebug(botId).lastPlannerRequest as { state: string }).state, "success");
+    });
+
+    await t.test("runtime permission rejection consumes the action without calling the adapter", async () => {
+      const botId = "planner-execution-denied";
+      await configureBot(botId, "assist", []);
+      replyContent = JSON.stringify({
+        intent: "execute_skill",
+        directive: { actions: [{ kind: "eat_food", params: {} }] }
+      });
+      const result = await invoke("agent.runOnce", { botId, userInstruction: "Eat." });
+      assert.equal(result.isError, undefined);
+      let framework = await readFramework(botId);
+      const deadline = Date.now() + 3000;
+      while (!framework.executionEvents.some((event) => event.type === "task_failed") && Date.now() < deadline) {
+        await delay(25);
+        framework = await readFramework(botId);
+      }
+      assert.ok(framework.executionEvents.some((event) =>
+        event.type === "task_failed" && event.payload.detail === "hierarchical runtime blocked tool 'interact.eat'"
+      ));
+      assert.equal(adapters.get(botId)?.eatCount, 0);
+      assert.deepEqual(getCommandInvocationHistoryForDebug(registry, { botId }), []);
+      assert.deepEqual(framework.queuedActions, []);
+      assert.equal(framework.activeAction, null);
+      assert.equal(framework.activeSkill, null);
+    });
+
+    await t.test("adapter failure reaches diagnostics and releases the bound action and skill", async () => {
+      const botId = "planner-execution-failed";
+      await configureBot(botId, "assist");
+      const adapter = adapters.get(botId);
+      assert.ok(adapter);
+      adapter.eatFood = async () => {
+        adapter.eatCount += 1;
+        throw new Error("food execution unavailable");
+      };
+      replyContent = JSON.stringify({
+        intent: "execute_skill",
+        directive: { actions: [{ kind: "eat_food", params: {} }] }
+      });
+      const result = await invoke("agent.runOnce", { botId, userInstruction: "Eat." });
+      assert.equal(result.isError, undefined);
+      let framework = await readFramework(botId);
+      const deadline = Date.now() + 3000;
+      while (!framework.executionEvents.some((event) => event.payload.skill === "interact.eat") && Date.now() < deadline) {
+        await delay(25);
+        framework = await readFramework(botId);
+      }
+      assert.ok(framework.executionEvents.some((event) =>
+        event.type === "task_failed" && event.payload.lastError === "food execution unavailable"
+      ));
+      assert.equal(adapter.eatCount, 1);
+      assert.equal(getAgentStatusForDebug(botId).lastPlanResult, "food execution unavailable");
+      assert.equal(getCommandInvocationHistoryForDebug(registry, { botId })[0]?.status, "failed");
+      assert.deepEqual(framework.queuedActions, []);
+      assert.equal(framework.activeAction, null);
+      assert.equal(framework.activeSkill, null);
     });
 
     await t.test("directive reaches the blackboard, skill catalog, dispatcher and adapter", async () => {

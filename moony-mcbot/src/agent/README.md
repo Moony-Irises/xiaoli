@@ -15,10 +15,11 @@
 - `planner-request-runner.ts`：管理单次 planner 请求的超时输入、取消信号和成功/失败诊断终态，并向整轮协调器提供有效性作用域。
 - `planning-strategy.ts`：注入模型请求器并返回保留原始计划的完整规划决策。
 - `planning-turn-coordinator.ts`：统一冷却、事件、失效复核、目标/指令应用、兼容步骤和入口返回。
+- `runtime-action-executor.ts`：单个分层动作的 Skill 权限复核、任务冲突判断、绑定、执行、结果事件与执行后清理。
 - `tool-executors.ts`：可离线测试的 Agent 工具执行语义；当前包含进食、转头和限时步行执行器。
 - `runtime.ts`：组织事件、动作选择、Skill 绑定和执行状态。
 
-Agent 周期 tick 的 interval 与按 Bot 串行运行 tail 不由本模块持有；资源边界见 [`src/runtime/agent-executor-lifecycle.ts`](../runtime/agent-executor-lifecycle.ts)。`HierarchicalAgentRuntime` 现在拥有每个 Bot 的任务 timeout timer、executor tick 冷却门、planner 冷却时间戳判定、task progress 节流状态、战略生命周期去重标记、库存变化事件基线和空闲社交尝试冷却，`action-tools.ts` 只负责选择任务类型、发布事件和调用时机。planner 轮次、工具执行和其余状态编排仍由 `action-tools.ts` 组合。
+Agent 周期 tick 的 interval 与按 Bot 串行运行 tail 不由本模块持有；资源边界见 [`src/runtime/agent-executor-lifecycle.ts`](../runtime/agent-executor-lifecycle.ts)。`HierarchicalAgentRuntime` 现在拥有每个 Bot 的任务 timeout timer、executor tick 冷却门、planner 冷却时间戳判定、task progress 节流状态、战略生命周期去重标记、库存变化事件基线和空闲社交尝试冷却。规划轮次和单个分层动作执行各有独立协调边界，`action-tools.ts` 保留 tick 顺序、状态采集、领域工具和旧工具步骤的兼容执行分支。
 
 任务 timeout 会在同一 Bot 上替换旧 timer，并通过既有 `pollExpiredTimers()` 生成 `task_timeout` 事件；tick 冷却保持旧的严格最小间隔语义。planner 使用 `syncPlannerTimestamp()`、`canStartPlanner()`、`plannerCooldownRemaining()` 和 `markPlannerCompleted()` 保留首次请求、恰好到期与时钟回退边界。task progress 使用只读的 `canPublishTaskProgress()`、成功发布后的 `markTaskProgressPublished()` 和显式 `clearTaskProgress()` 保留首次/详情变化、1200ms 边界、时钟回退和任务清理语义。战略生命周期使用 `claimStrategicLifecycleInstruction()` 记录已占用的普通提示事件，使用 `canPublishStrategicLifecycleReport()` / `markStrategicLifecycleReportPublished()` 保留完成/放弃汇报的成功后记账语义，并由 `clearStrategicLifecycle()` 在配置删除时清理；两类标记彼此独立，生命周期历史仍在黑板事件流。`observeInventorySummary()` 会先更新本轮摘要，再仅在已有基线且摘要变化时返回 `true`；`clearInventorySummary()` 只在 Agent 配置删除路径调用，普通 self-guard stop 继续保留基线。`claimIdleSocialAttempt()` 在冷却允许时立即记录本次尝试，因此后续目标实体丢失或聊天未发送也不会回滚；恰好到期可再次尝试，普通 executor 停止和空闲策略切换不清理，`clearIdleSocialAttempt()` 只在 Agent 配置删除时调用。配置 `lastPlanAt` 仍是诊断镜像；并发请求、请求取消和执行队列没有在本轮迁移。这些方法不读取配置、不调用 Adapter，也不改变公共 Agent/MCP/Web 契约。
 
@@ -33,6 +34,10 @@ Agent 周期 tick 的 interval 与按 Bot 串行运行 tail 不由本模块持�
 响应保持旧规则：读取第一个 choice，支持文本片段、choice text 回退和 JSON 代码围栏，拒绝空文本、坏 JSON 和未知 intent。嵌套动作的完整 schema 校验没有随本次抽取新增。
 
 ## 工具权限
+
+`executeAgentRuntimeAction(runtime, hooks)` 复用黑板的 Skill 预览/绑定和动作排序，通过四个内部 hooks 获取当前权限、判断任务冲突、执行工具和写诊断。权限拒绝消费该动作、发布 normal 优先级 `task_failed` 并返回 `false`；任务冲突不消费动作。成功或工具异常处理后返回 `true`，分别发布 `task_finished` 或 high 优先级 `task_failed`。执行期间 active action/skill 可观察，已绑定工具执行的 `finally` 负责释放状态；工具结果和事件仍只表示本地执行链证据。
+
+快照同步、tick 和任务超时轮询在调用层先完成；旧 `tool_call` 步骤保留原分支。执行器不新增取消、回滚、并发锁或权限默认值，不会改变已提交动作的 stop/config/shutdown 语义，详见 [执行边界](../../docs/strategic-planner-injection-design.md#8-分层动作执行边界)。
 
 每个 `SkillModuleDescriptor` 必须声明 `toolDependencies`。`auditSkillCatalogToolPermissions()` 可将这些依赖与某个 Agent allowlist 比较，但不会自行改变权限或过滤运行时动作。
 
@@ -55,4 +60,5 @@ Agent 周期 tick 的 interval 与按 Bot 串行运行 tail 不由本模块持�
 ```powershell
 npm test -- test/agent-blackboard.test.ts test/agent-executor-lifecycle.test.ts test/agent-executor-integration.test.ts test/agent-tool-executors.test.ts test/action-command-set.test.ts test/eat-command-integration.test.ts test/hold-category-command-integration.test.ts test/open-door-command-integration.test.ts test/skill-permission-audit.test.ts test/tool-catalog.test.ts
 npm test -- test/openai-agent-planner.test.ts test/planner-request-runner.test.ts test/ai-request-lifecycle.test.ts test/agent-planner-integration.test.ts test/agent-planning-strategy.test.ts test/agent-planning-turn.test.ts test/agent-planning-injection-integration.test.ts
+npm test -- test/agent-runtime-action-executor.test.ts test/agent-planner-integration.test.ts
 ```

@@ -154,6 +154,7 @@ import {
   executeAgentEatTool,
   executeAgentLookTool,
   executeAgentWalkTool,
+  executeAgentRuntimeAction,
   HierarchicalAgentSupervisor
 } from "../agent/index.js";
 import type {
@@ -5729,69 +5730,12 @@ async function executeHierarchicalRuntimeAction(botId: string, registry: BotRegi
   const runtime = hierarchicalAgents.ensure(botId);
   runtime.pollExpiredTimers();
 
-  const preview = runtime.chooseNextSkillInvocation();
-  if (!preview) return false;
-
-  const cfg = getOrCreateAgentConfig(botId);
-  if (!cfg.allowedTools.includes(preview.invocation.skill)) {
-    runtime.bindNextAction();
-    runtime.ingestEvent({
-      id: `evt_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-      type: "task_failed",
-      priority: "normal",
-      createdAt: Date.now(),
-      payload: {
-        taskType: preview.action.kind,
-        detail: `hierarchical runtime blocked tool '${preview.invocation.skill}'`
-      }
-    });
-    runtime.finishActiveExecution();
-    return false;
-  }
-
-  const activeTask = getActiveAgentTask(botId);
-  if (!canAgentInterruptActiveTask(activeTask, preview.invocation.skill)) {
-    return false;
-  }
-
-  const bound = runtime.bindNextAction();
-  if (!bound) return false;
-
-  try {
-    const result = await executeAgentToolCall(botId, registry, bound.invocation.skill, bound.invocation.args);
-    agentConfigStore.updateRuntimeDiagnostics(botId, { lastPlanResult: result });
-    runtime.ingestEvent({
-      id: `evt_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-      type: "task_finished",
-      priority: "normal",
-      createdAt: Date.now(),
-      payload: {
-        taskType: bound.action.kind,
-        detail: `executed ${bound.invocation.skill}`,
-        skill: bound.invocation.skill,
-        result
-      }
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    agentConfigStore.updateRuntimeDiagnostics(botId, { lastPlanResult: message });
-    runtime.ingestEvent({
-      id: `evt_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-      type: "task_failed",
-      priority: "high",
-      createdAt: Date.now(),
-      payload: {
-        taskType: bound.action.kind,
-        detail: `failed ${bound.invocation.skill}`,
-        skill: bound.invocation.skill,
-        lastError: message
-      }
-    });
-  } finally {
-    runtime.finishActiveExecution();
-  }
-
-  return true;
+  return executeAgentRuntimeAction(runtime, {
+    getAllowedTools: () => getOrCreateAgentConfig(botId).allowedTools,
+    canInterrupt: (tool) => canAgentInterruptActiveTask(getActiveAgentTask(botId), tool),
+    executeTool: (tool, args) => executeAgentToolCall(botId, registry, tool, args),
+    updateLastResult: (result) => agentConfigStore.updateRuntimeDiagnostics(botId, { lastPlanResult: result })
+  });
 }
 
 function getStrategicRepairInstruction(botId: string, registry: BotRegistry): string | null {

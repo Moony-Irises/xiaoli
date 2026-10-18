@@ -31,6 +31,6 @@ Start from [docs/README.md](docs/README.md). The current implementation is in an
 
 ## Current Focus
 
-Complete the planner/blackboard/command path before Modded Client work. Request, strategy, lifecycle and turn coordination are isolated; [the design](docs/strategic-planner-injection-design.md) records the compatibility boundary. Cancellation tests cover late-result suppression before side effects; real API/game evidence remains in [manual testing](docs/manual-testing-guide.md).
+Complete the planner/blackboard/command path before Modded Client work. Planning and single-action execution have independent boundaries; [the design](docs/strategic-planner-injection-design.md) records compatibility and cancellation limits. Offline tests cover stale plans, execution failures and active-state cleanup; real API/game evidence remains in [manual testing](docs/manual-testing-guide.md).
 
 Mineflayer remains the production default. Node 22+ is required; CI covers Node 22/24. Follow/path movement must not dig or place blocks. Conventions and validation commands are in [eslint.config.js](eslint.config.js), [tsconfig.json](tsconfig.json), and [test/README.md](test/README.md).
