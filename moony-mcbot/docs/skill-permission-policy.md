@@ -50,6 +50,6 @@ event / planner
 
 `social-skill` 已完成无效角度修复：只有成对且有限的数字角度会编译为 `player.look`；无有效角度的 `socialize` 会读取 `observe.nearbyPlayers`，无有效角度的 `observe_target`（包括当前超时恢复规则）会读取 `observe.nearbyEntities`。这两个只读降级工具已经属于默认 17 项 allowlist，不需要扩大权限。
 
-当前 `interact.eat` 已完成第 1、2 项执行前置；`player.look` 已完成第 1-3 项。`movement.walk` 也已补齐 dispatcher、MCP 同级的 `100..60000` 整数时长约束、严格布尔参数、旧状态取消和定时停止；Wander Skill 不再把字符串通过 `Number()` / `Boolean()` 隐式转换。
+当前 `interact.eat` 已完成第 1-3 项执行前置：`eat-skill` 保留可选 `itemName`，省略时自动选择，空串和非字符串交由执行边缘拒绝，显式与旧计划均有完整模拟接线回归；`player.look` 已完成第 1-3 项。`movement.walk` 也已补齐 dispatcher、MCP 同级的 `100..60000` 整数时长约束、严格布尔参数、旧状态取消和定时停止；Wander Skill 不再把字符串通过 `Number()` / `Boolean()` 隐式转换。
 
 这不代表 `movement.walk` 已适合默认开放：底层仍是直接控制向前，没有地形前视、碰撞绕行或悬崖/大落差保护。`interact.eat`、`player.look`、`movement.walk` 均继续留在默认 Tool Catalog / allowlist 之外。后续先补移动地形安全，再单独评估 `interact.attackPlayer`；高风险攻击权限不与其他能力打包开放。

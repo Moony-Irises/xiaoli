@@ -5,7 +5,7 @@ import test from "node:test";
 import type { Bot as MineflayerBot } from "mineflayer";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { BotRegistry } from "../src/runtime/bot-registry.js";
-import type { ActionResult, SelfStateSnapshot } from "../src/runtime/client-adapter.js";
+import type { ActionResult, EatFoodInput, SelfStateSnapshot } from "../src/runtime/client-adapter.js";
 import type { RuntimeState } from "../src/types.js";
 import type { SkillInvocation, StrategicAction, StrategicDirective } from "../src/agent/types.js";
 import {
@@ -57,14 +57,16 @@ function position(x: number, y: number, z: number): Position {
 
 class PlannerClientAdapter extends FakeClientAdapter {
   eatCount = 0;
+  readonly eatInputs: EatFoodInput[] = [];
 
   override getSelfState(): SelfStateSnapshot {
     return { username: "test-bot", position: position(123, 64, 456), health: 20, food: 20 };
   }
 
-  override async eatFood(): Promise<ActionResult> {
+  override async eatFood(input: EatFoodInput = {}): Promise<ActionResult> {
     this.eatCount += 1;
-    return { ok: true, detail: "ate 'bread'" };
+    this.eatInputs.push({ ...input });
+    return { ok: true, detail: `ate '${input.itemName ?? "bread"}'` };
   }
 }
 
@@ -362,6 +364,64 @@ test("MCP planner requests preserve diagnostics, projection and the skill execut
       assert.equal(framework.activeSkill, null);
     });
 
+    for (const legacy of [false, true]) {
+      await t.test(`${legacy ? "legacy" : "explicit"} food plan forwards itemName through the dispatcher to the adapter`, async () => {
+        const botId = `planner-named-food-${legacy ? "legacy" : "explicit"}`;
+        await configureBot(botId, "assist");
+        const itemName = " cooked_salmon ";
+        replyContent = JSON.stringify({
+          intent: "execute_skill",
+          ...(legacy
+            ? { steps: [{ tool: "interact.eat", arguments: { itemName } }] }
+            : { directive: { actions: [{ kind: "eat_food", params: { itemName } }] } })
+        });
+        const result = await invoke("agent.runOnce", { botId, userInstruction: "Eat cooked salmon." });
+        assert.equal(result.isError, undefined, result.content[0]?.text);
+        let framework = await readFramework(botId);
+        const deadline = Date.now() + 3000;
+        while (!framework.executionEvents.some((event) => event.payload.skill === "interact.eat") && Date.now() < deadline) {
+          await delay(25);
+          framework = await readFramework(botId);
+        }
+        assert.deepEqual(adapters.get(botId)?.eatInputs, [{ itemName: "cooked_salmon" }]);
+        const history = getCommandInvocationHistoryForDebug(registry, { botId });
+        assert.equal(history[0]?.commandId, "interact.eat");
+        assert.equal(history[0]?.source, "agent");
+        assert.equal(history[0]?.status, "executed");
+        assert.ok(framework.executionEvents.some((event) =>
+          event.type === "task_finished" && event.payload.skill === "interact.eat"
+        ));
+        assert.equal(framework.activeAction, null);
+        assert.equal(framework.activeSkill, null);
+      });
+    }
+
+    await t.test("invalid planned itemName fails before any automatic food reaches the adapter", async () => {
+      const botId = "planner-invalid-food";
+      await configureBot(botId, "assist");
+      replyContent = JSON.stringify({
+        intent: "execute_skill",
+        directive: { actions: [{ kind: "eat_food", params: { itemName: 42 } }] }
+      });
+      const result = await invoke("agent.runOnce", { botId, userInstruction: "Eat." });
+      assert.equal(result.isError, undefined, result.content[0]?.text);
+      let framework = await readFramework(botId);
+      const deadline = Date.now() + 3000;
+      while (!framework.executionEvents.some((event) => event.payload.skill === "interact.eat") && Date.now() < deadline) {
+        await delay(25);
+        framework = await readFramework(botId);
+      }
+      assert.deepEqual(adapters.get(botId)?.eatInputs, []);
+      assert.equal(adapters.get(botId)?.eatCount, 0);
+      assert.deepEqual(getCommandInvocationHistoryForDebug(registry, { botId }), []);
+      assert.equal(getAgentStatusForDebug(botId).lastPlanResult, "interact.eat itemName must be a string");
+      assert.ok(framework.executionEvents.some((event) =>
+        event.type === "task_failed" && event.payload.lastError === "interact.eat itemName must be a string"
+      ));
+      assert.equal(framework.activeAction, null);
+      assert.equal(framework.activeSkill, null);
+    });
+
     await t.test("directive reaches the blackboard, skill catalog, dispatcher and adapter", async () => {
       const botId = "planner-eat-chain";
       await configureBot(botId, "assist");
@@ -378,6 +438,7 @@ test("MCP planner requests preserve diagnostics, projection and the skill execut
       const deadline = Date.now() + 5000;
       while (Date.now() < deadline && adapters.get(botId)?.eatCount === 0) await delay(25);
       assert.equal(adapters.get(botId)?.eatCount, 1);
+      assert.deepEqual(adapters.get(botId)?.eatInputs, [{}]);
       const history = getCommandInvocationHistoryForDebug(registry, { botId });
       assert.equal(history[0]?.commandId, "interact.eat");
       assert.equal(history[0]?.source, "agent");

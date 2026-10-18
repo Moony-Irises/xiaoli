@@ -138,7 +138,10 @@ export function createDefaultSkillCatalog(): SkillModuleDescriptor[] {
         const food = Number(vitals?.food ?? 20);
         return health < 20 || food < 20 ? ok(0.9, "healing or hunger suggests eating") : ok(0.6, "eating is available");
       },
-      compile: () => [{ skill: "interact.eat", args: {} }]
+      compile: (action) => [{
+        skill: "interact.eat",
+        args: action.params.itemName === undefined ? {} : { itemName: action.params.itemName }
+      }]
     },
     {
       id: "prepare-battle-skill",

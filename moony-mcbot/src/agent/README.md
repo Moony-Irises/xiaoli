@@ -47,6 +47,8 @@ Agent 周期 tick 的 interval 与按 Bot 串行运行 tail 不由本模块持�
 
 `interact.eat`、`player.look` 与 `movement.walk` 的 Agent 参数执行器已可用，但仍不属于默认 allowlist；自定义权限配置之外的 Agent 行为没有变化。`interact.eat` 的实际执行还会经过 MCP/Web 共用的 `ActionCommandSet` 与 CommandDispatcher，并保留现有 Agent 参数错误与成功文本。转头执行器要求有限数字 `yaw/pitch`；步行执行器沿用 MCP 的 100-60000ms 整数范围，严格校验布尔参数并保证计时停止。
 
+`eat-skill` 将 `eat_food.params.itemName` 原值传到执行边缘；未提供或为 `undefined` 时保留自动选食物，字符串由现有执行器 trim，空串或非字符串明确报错，不会退回自动进食。显式动作、旧 `steps` 和单个 `tool` 计划遵循同一语义，`reason` 等元数据不会传给进食接口。指定食物不在背包时，Adapter 沿用原有未找到错误。默认权限仍关闭；低饥饿反应规则未指定食物时保持自动选择。
+
 `move.stopFollow` 保持原默认权限和 `stopped follow` 成功文本，但现在会经过共享 `ActionCommandSet` 与 CommandDispatcher，与 MCP/Web 共用领域 handler 并写入跨入口命令历史。其 `executed` 终态只表示停止 handler 正常完成，游戏内停止仍需 Adapter/事件证据确认。
 
 `inventory.holdByCategory` 同样保留原默认权限、类别 trim、错误文本和成功 detail，但实际持有动作现在经过共享 CommandDispatcher。非法类别仍由 Agent 边缘拒绝；有效命令会按 `source=agent` 写入 Command History，`executed` 不等于游戏客户端已经显示切换后的手持物。
@@ -63,4 +65,5 @@ Agent 周期 tick 的 interval 与按 Bot 串行运行 tail 不由本模块持�
 npm test -- test/agent-blackboard.test.ts test/agent-executor-lifecycle.test.ts test/agent-executor-integration.test.ts test/agent-tool-executors.test.ts test/action-command-set.test.ts test/eat-command-integration.test.ts test/hold-category-command-integration.test.ts test/open-door-command-integration.test.ts test/skill-permission-audit.test.ts test/tool-catalog.test.ts
 npm test -- test/openai-agent-planner.test.ts test/planner-request-runner.test.ts test/ai-request-lifecycle.test.ts test/agent-planner-integration.test.ts test/agent-planning-strategy.test.ts test/agent-planning-turn.test.ts test/agent-planning-injection-integration.test.ts
 npm test -- test/agent-runtime-action-executor.test.ts test/agent-planner-integration.test.ts
+npm test -- test/agent-eat-skill.test.ts test/agent-planner-integration.test.ts test/agent-tool-executors.test.ts test/eat-command-integration.test.ts test/skill-permission-audit.test.ts
 ```

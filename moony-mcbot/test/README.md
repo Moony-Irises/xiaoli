@@ -39,3 +39,5 @@ Agent 事件视图的离线回归还覆盖框架事件与执行事件合并、`t
 `agent-runtime-action-executor.test.ts` 使用真实黑板和 Skill Catalog、注入领域工具 hooks，覆盖不可编译动作、权限拒绝、任务冲突、执行中状态、结果/事件顺序、工具/诊断/事件异常、后续队列继续执行、反应优先级与 Bot 隔离。`agent-planner-integration.test.ts` 同时验证 MCP 排队后的权限拒绝不触达 Adapter，及真实 Dispatcher 接线中的失败诊断与 active 状态释放。测试不证明已提交动作可以回滚，也不取代游戏内验证。
 
 权限拒绝订阅者异常回归先在旧实现复现 active 状态残留，再验证直接/通配订阅者抛出的原异常、清理、下一动作继续执行及另一个 Bot 的 pending Skill 不受影响；不依赖真实 API、游戏或时间延迟。
+
+`agent-eat-skill.test.ts` 覆盖指定食物、自动选择、未修改原参数、无关元数据过滤、空值/错误类型拒绝以及显式/旧计划翻译后的参数保留。接线测试另验证显式动作和旧步骤经真实 MCP → 黑板 → Skill → CommandDispatcher 向模拟 Adapter 传递指定食物，无效参数不触达 Adapter，也不生成命令历史。修复前回归已复现“指定食物和无效参数都变为自动选择”；默认权限仍未开放，真实食物消耗不在离线证据内。

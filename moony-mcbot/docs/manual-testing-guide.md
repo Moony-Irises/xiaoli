@@ -1225,6 +1225,28 @@ hi小狸
 
 权限拒绝事件的订阅者异常清理已由离线故障注入测试覆盖，无需在游戏中专门制造故障。若实际运行出现订阅者异常，保留后台原错误，并在下一次刷新确认 `activeAction` / `activeSkill` 不残留被拒动作、下一条安全指令仍能执行。同步事件派发可能在异常处中断，因此缺少 `task_failed` 记录时应同时查看后台错误日志。
 
+### 9.3 Agent 指定食物回归（积压，方便时测）
+
+这项验证规划后的 `eat_food` 编译链，直接点击 Web「吃东西」只能覆盖第 7.1 节，不能代替本项。目前不需要立刻测试。
+
+1. 先按第 0 节启动，确认 Agent 为 `assist` 或 `auto`、`executorAttached=true`。检查当前 `allowedTools` 是否已有 `interact.eat`；若没有，保留此项待测，不要为测试开放全部工具。记录原模式与权限，结束后恢复。
+2. 让小狸背包同时有 `cooked_salmon` 和另一种食物（如 `bread`），饥饿值低于满值，停止原跟随任务。通过 Web 工具运行器或 MCP 调用 `agent.runOnce`：
+
+   ```json
+   {
+     "botId": "XiaoLi_26.3.3_newnancity",
+     "userInstruction": "只吃背包中的熟鲑鱼 cooked_salmon，不要选其他食物，不做其他动作。",
+     "requester": "Judy"
+   }
+   ```
+
+3. 检查原始返回的 `plan`：应有 `eat_food.params.itemName="cooked_salmon"`，或旧 `interact.eat` 的 `arguments.itemName`。模型若漏掉或选错名称，记录为规划问题；不能只凭自然语言回复认定已测试指定食物。`applied_directive_...` 只表示排队。
+4. 等一个 executor 周期，检查 Command History 的 `interact.eat`、`source=agent` 结果和 `task_finished`；结果应包含 `ate 'cooked_salmon'`。同时看游戏手持、熟鲑鱼数量及饥饿值，确认没有改吃面包，active action/skill 最终清空。
+5. 移走熟鲑鱼、保留另一种食物，等 planner 冷却后再次发同一请求；先确认计划仍指定 `cooked_salmon`。预期 `task_failed` / 命令失败包含 `Food item 'cooked_salmon' not found in inventory`，不能改吃其他食物。如果模型改为观察或不执行，该次没有覆盖“指定食物缺失”路径，保留待测。
+6. 最后不指定食物地请求「吃点东西」，确认计划的 `eat_food.params` 没有 `itemName` 时仍能自动选择可用食物；满饥饿值导致不能吃不算参数传递失败，按第 7.1 节准备条件后再测。
+
+离线回归已覆盖指定名称、自动选择、无效类型/空串、显式动作与旧步骤接线，开发者命令：`npm test -- test/agent-eat-skill.test.ts test/agent-planner-integration.test.ts test/agent-tool-executors.test.ts test/eat-command-integration.test.ts test/skill-permission-audit.test.ts`。未找到食物及实际消耗仍以 Adapter 和游戏证据为准。
+
 ## 10. 清理测试状态
 
 停止跟随：

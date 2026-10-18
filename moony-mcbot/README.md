@@ -8,6 +8,8 @@
 
 单个分层动作的权限、任务冲突、Skill 执行和结果清理由 `executeAgentRuntimeAction` 统一处理，离线回归覆盖执行失败、权限拒绝订阅者异常后的清理、排队等待和多 Bot 隔离；旧工具兼容分支仍保留。使用与验证入口见 [Agent 模块](src/agent/README.md)。
 
+进食 Skill 已修复指定食物被丢弃的问题：显式动作与旧计划都保留 `itemName`，省略时继续自动选择，无效名称参数明确失败。默认工具权限不变，游戏内待测步骤见 [手动指南 9.3](docs/manual-testing-guide.md#93-agent-指定食物回归积压方便时测)。
+
 聊天监听配置与运行资源也已分离：ConfigStore 保存开关和规则，`ChatListenerLifecycle` 按 Bot 管理实际订阅，并统一拥有监听 watchdog。消息处理、去重、重连协调和具体回复仍由 `action-tools.ts` 编排，外部 MCP、Web 和游戏行为不变。
 
 ## 快速入口
