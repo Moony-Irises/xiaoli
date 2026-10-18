@@ -31,12 +31,15 @@ export async function executeAgentRuntimeAction(
 
   if (!hooks.getAllowedTools().includes(preview.invocation.skill)) {
     runtime.bindNextAction();
-    runtime.ingestEvent(executionEvent("task_failed", "normal", {
-      taskType: preview.action.kind,
-      detail: `hierarchical runtime blocked tool '${preview.invocation.skill}'`
-    }));
-    runtime.finishActiveExecution();
-    return false;
+    try {
+      runtime.ingestEvent(executionEvent("task_failed", "normal", {
+        taskType: preview.action.kind,
+        detail: `hierarchical runtime blocked tool '${preview.invocation.skill}'`
+      }));
+      return false;
+    } finally {
+      runtime.finishActiveExecution();
+    }
   }
 
   if (!hooks.canInterrupt(preview.invocation.skill)) return false;

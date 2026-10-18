@@ -6,7 +6,7 @@
 
 当前短期社交与人格运行态由 `SocialRuntimeStateStore` 按 Bot 隔离管理，包含最近互动、主动发言时间、回复上下文、心情和场景台词冷却。它只存在于进程内，不属于共享记忆或持久化配置；具体聊天、self-guard 和记忆编排仍在 `action-tools.ts`。Agent 的 planner 请求、计划到指令翻译和生产规划轮次已有独立边界，但旧 `StrategicPlanner` 兼容入口和执行队列仍在后续收敛中。Agent 调试状态的 framework、tail、trace 和 Web 事件出口已共用有界可观察视图，内部 `recentEvents` 仍保留给 Reactive 和 planner 输入。
 
-单个分层动作的权限、任务冲突、Skill 执行和结果清理由 `executeAgentRuntimeAction` 统一处理，离线回归覆盖执行失败、排队等待和多 Bot 隔离；旧工具兼容分支仍保留。使用与验证入口见 [Agent 模块](src/agent/README.md)。
+单个分层动作的权限、任务冲突、Skill 执行和结果清理由 `executeAgentRuntimeAction` 统一处理，离线回归覆盖执行失败、权限拒绝订阅者异常后的清理、排队等待和多 Bot 隔离；旧工具兼容分支仍保留。使用与验证入口见 [Agent 模块](src/agent/README.md)。
 
 聊天监听配置与运行资源也已分离：ConfigStore 保存开关和规则，`ChatListenerLifecycle` 按 Bot 管理实际订阅，并统一拥有监听 watchdog。消息处理、去重、重连协调和具体回复仍由 `action-tools.ts` 编排，外部 MCP、Web 和游戏行为不变。
 

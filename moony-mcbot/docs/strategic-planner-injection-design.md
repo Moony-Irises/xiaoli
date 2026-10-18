@@ -108,4 +108,6 @@ npm test -- test/planner-request-runner.test.ts test/ai-request-lifecycle.test.t
 
 保持现有顺序：权限拒绝会消费该动作并发布 normal 优先级的 `task_failed`、返回 `false`；任务冲突保留队首动作且不绑定；工具成功发布 `task_finished`，异常发布 high 优先级的 `task_failed`，两者都返回 `true`。执行期间 active action/skill 保持可观察，后续队列由黑板持有。事件字段、工具参数、诊断文本和两次 Skill 编译的既有行为保持不变。
 
+权限拒绝事件的同步订阅者抛错时，独立 `finally` 仍会释放已绑定状态，再向上传递原异常。被拒动作保持已消费，后续动作和其他 Bot 不受清理影响；事件订阅者异常可能中断 EventBus 后续派发和黑板记录，本次只保证状态清理，不重试发布事件。预览和绑定尚未成功时的异常不纳入这一保证。
+
 旧 `tool_call` 兼容步骤已经存在同一黑板队列中，但尚有单独的执行分支，本步继续保留。规划作用域在计划提交完成后关闭；已经入队或开始的动作不因本次抽取获得取消或回滚保证。后续若改变 stop/config/shutdown 对已提交工作的语义，需要单独设计与确认。

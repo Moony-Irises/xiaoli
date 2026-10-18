@@ -80,6 +80,67 @@ test("task conflict retains the action until interruption becomes allowed", asyn
   assert.deepEqual(f.runtime.snapshot().queuedActions, []);
 });
 
+test("permission rejection subscriber errors release active state without replaying the rejected action", async (t) => {
+  for (const eventType of ["task_failed", "*"] as const) {
+    await t.test(eventType, async () => {
+      const f = fixture();
+      f.hooks.getAllowedTools = () => [];
+      f.runtime.blackboard.enqueueActions([action("denied"), action("next")]);
+      const failure = new Error(`${eventType} subscriber failed`);
+      const unsubscribe = f.runtime.events.subscribe(eventType, () => {
+        assert.equal(f.runtime.snapshot().activeAction?.id, "denied");
+        assert.equal(f.runtime.snapshot().activeSkill?.skill, "interact.eat");
+        throw failure;
+      });
+
+      await assert.rejects(executeAgentRuntimeAction(f.runtime, f.hooks), (error) => error === failure);
+      assert.equal(f.runtime.snapshot().activeAction, null);
+      assert.equal(f.runtime.snapshot().activeSkill, null);
+      assert.deepEqual(f.runtime.snapshot().queuedActions.map((item) => item.id), ["next"]);
+      assert.deepEqual(f.calls, []);
+      assert.deepEqual(f.results, []);
+      assert.equal(f.runtime.events.getRecent().length, 1);
+      assert.equal(f.runtime.events.getRecent()[0]?.priority, "normal");
+
+      unsubscribe();
+      f.hooks.getAllowedTools = () => ["interact.eat"];
+      assert.equal(await executeAgentRuntimeAction(f.runtime, f.hooks), true);
+      assert.equal(f.calls.length, 1);
+      assert.deepEqual(f.results, ["executed"]);
+      assert.deepEqual(f.runtime.snapshot().queuedActions, []);
+      assert.deepEqual(f.runtime.events.getRecent().map((event) => event.type), ["task_failed", "task_finished"]);
+    });
+  }
+});
+
+test("permission rejection cleanup does not release another bot's pending skill", async () => {
+  const a = fixture(new HierarchicalAgentRuntime("denied-a", undefined, { reactiveRules: [] }));
+  const b = fixture(new HierarchicalAgentRuntime("running-b", undefined, { reactiveRules: [] }));
+  a.runtime.blackboard.enqueueActions([action("denied")]);
+  b.runtime.blackboard.enqueueActions([action("running")]);
+  const pending = deferred<string>();
+  b.hooks.executeTool = () => pending.promise;
+  const running = executeAgentRuntimeAction(b.runtime, b.hooks);
+  a.hooks.getAllowedTools = () => [];
+  const failure = new Error("denied subscriber failed");
+  a.runtime.events.subscribe("task_failed", () => { throw failure; });
+
+  try {
+    await assert.rejects(executeAgentRuntimeAction(a.runtime, a.hooks), (error) => error === failure);
+    assert.equal(a.runtime.snapshot().activeAction, null);
+    assert.equal(a.runtime.snapshot().activeSkill, null);
+    assert.equal(b.runtime.snapshot().activeAction?.id, "running");
+    assert.equal(b.runtime.snapshot().activeSkill?.skill, "interact.eat");
+    assert.deepEqual(b.runtime.events.getRecent(), []);
+    assert.deepEqual(b.results, []);
+  } finally {
+    pending.resolve("b executed");
+    await running;
+  }
+  assert.equal(b.runtime.snapshot().activeAction, null);
+  assert.deepEqual(b.results, ["b executed"]);
+});
+
 test("running skill stays observable and records diagnostics before its terminal event and release", async () => {
   const f = fixture();
   const pending = deferred<string>();

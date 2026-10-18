@@ -37,3 +37,5 @@ Agent 事件视图的离线回归还覆盖框架事件与执行事件合并、`t
 `agent-planning-turn.test.ts` 覆盖完整轮次的冷却、原始计划与里程碑保留、单次应用、权限/执行错误、取消和失效后的无副作用、同 Bot 交错、异步聊天、shutdown 及多 Bot 隔离。`agent-planning-injection-integration.test.ts` 通过真实 MCP 注册、Web debug helper、配置重载和自动 executor 验证同一注入策略的入口复用；使用假策略和隔离适配器，不连接真实模型或游戏。
 
 `agent-runtime-action-executor.test.ts` 使用真实黑板和 Skill Catalog、注入领域工具 hooks，覆盖不可编译动作、权限拒绝、任务冲突、执行中状态、结果/事件顺序、工具/诊断/事件异常、后续队列继续执行、反应优先级与 Bot 隔离。`agent-planner-integration.test.ts` 同时验证 MCP 排队后的权限拒绝不触达 Adapter，及真实 Dispatcher 接线中的失败诊断与 active 状态释放。测试不证明已提交动作可以回滚，也不取代游戏内验证。
+
+权限拒绝订阅者异常回归先在旧实现复现 active 状态残留，再验证直接/通配订阅者抛出的原异常、清理、下一动作继续执行及另一个 Bot 的 pending Skill 不受影响；不依赖真实 API、游戏或时间延迟。

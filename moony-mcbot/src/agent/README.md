@@ -37,6 +37,8 @@ Agent 周期 tick 的 interval 与按 Bot 串行运行 tail 不由本模块持�
 
 `executeAgentRuntimeAction(runtime, hooks)` 复用黑板的 Skill 预览/绑定和动作排序，通过四个内部 hooks 获取当前权限、判断任务冲突、执行工具和写诊断。权限拒绝消费该动作、发布 normal 优先级 `task_failed` 并返回 `false`；任务冲突不消费动作。成功或工具异常处理后返回 `true`，分别发布 `task_finished` 或 high 优先级 `task_failed`。执行期间 active action/skill 可观察，已绑定工具执行的 `finally` 负责释放状态；工具结果和事件仍只表示本地执行链证据。
 
+权限拒绝的事件发布也由独立 `finally` 清理：直接或通配事件订阅者抛错后，active action/skill 会释放，原异常继续向上传递，后续队列保留，被拒动作不会重试。EventBus 仍同步发布；订阅异常可能中断后续订阅者及黑板事件写入，本项不提供事件投递保证，也不改变 Skill 预览或绑定异常的行为。
+
 快照同步、tick 和任务超时轮询在调用层先完成；旧 `tool_call` 步骤保留原分支。执行器不新增取消、回滚、并发锁或权限默认值，不会改变已提交动作的 stop/config/shutdown 语义，详见 [执行边界](../../docs/strategic-planner-injection-design.md#8-分层动作执行边界)。
 
 每个 `SkillModuleDescriptor` 必须声明 `toolDependencies`。`auditSkillCatalogToolPermissions()` 可将这些依赖与某个 Agent allowlist 比较，但不会自行改变权限或过滤运行时动作。
